@@ -1,0 +1,319 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+enum FuelType {
+  PETROL
+  DIESEL
+  CNG
+  LPG
+  ELECTRIC
+  HYBRID
+  OTHER
+}
+
+enum CarStatus {
+  IN_STOCK
+  IN_PREP
+  SOLD
+}
+
+enum CarSource {
+  CAR_ON_SALE
+  AUTO1
+  COPART
+}
+
+enum Transmission {
+  MANUAL
+  AUTOMATIC
+}
+
+enum ExpenseCategory {
+  AUCTION_FEE
+  DELIVERY
+  TUV
+  REPAIR
+  REGISTRATION
+  OTHER
+}
+
+enum GeneralExpenseCategory {
+  RENT // Аренда (гараж, склад)
+  TOOLS // Инструмент/расходники
+  ACCOUNTING // Бухгалтерия
+  TAXES // Налоги, сборы, пошлины
+  INSURANCE // Страховка
+  FUEL // Топливо (не по конкретной машине на продажу)
+  OFFICE_SUPPLIES // Офис/канцелярия/перчатки и т.п.
+  BANK_FEES // Банковские комиссии
+  ADVERTISING // Реклама/объявления
+  OTHER // Прочее
+}
+
+enum PrivateEntryKind {
+  INCOME
+  EXPENSE
+}
+
+enum DocumentKind {
+  PURCHASE_INVOICE
+  FEE_INVOICE
+  TRANSPORT_INVOICE
+  BNPL_INVOICE
+  ZB1
+  ZB2
+  FAHRZEUGSCHEIN
+  SALE_CONTRACT
+  OTHER
+}
+
+enum CheckRunKind {
+  MAIL
+  AUCTION
+  TELEGRAM
+}
+
+/// Лог ручных проверок почты/аукционов, которые я (Claude) выполняю по просьбе
+/// пользователя в чате — не автономная фоновая задача сайта (см. AGENTS.md/чат).
+/// Каждая найденная запись (Car/GeneralExpense/Expense) временно привязывается
+/// к CheckRun через checkRunId, пока пользователь не подтвердит её на /check.
+/// Токен доступа к Gmail для автоматической проверки почты (кнопка "Проверить почту").
+/// Ожидается одна строка — приложение однопользовательское, логина в нём нет вообще.
+model GoogleAuth {
+  id           String   @id @default(cuid())
+  email        String?
+  refreshToken String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+/// Offset последнего обработанного update_id из Telegram Bot API (getUpdates) — кнопка
+/// "Проверить Telegram". Одна строка, аналогично GoogleAuth — приложение однопользовательское.
+model TelegramState {
+  id           String   @id @default(cuid())
+  lastUpdateId Int      @default(0)
+  updatedAt    DateTime @updatedAt
+}
+
+/// Один присланный боту файл, распознанный, но ещё не применённый — ждёт подтверждения
+/// пользователя в Telegram (кнопки "Подтвердить"/"Отмена"). Файл может содержать НЕСКОЛЬКО
+/// отдельных документов (например, пакетный скан чеков за месяц из HP-сканера) — каждый
+/// становится отдельным TelegramPendingItem, подтверждаются все разом одной кнопкой.
+model TelegramPending {
+  id        String   @id @default(cuid())
+  chatId    Int
+  createdAt DateTime @default(now())
+
+  items TelegramPendingItem[]
+}
+
+model TelegramPendingItem {
+  id               String   @id @default(cuid())
+  pendingId        String
+  pending          TelegramPending @relation(fields: [pendingId], references: [id], onDelete: Cascade)
+  role             String // "SALE" | "PURCHASE" | "EXPENSE"
+  fieldsJson       String // JSON.stringify() распознанных полей этого документа
+  fileBuffer       Bytes // срез страниц исходного файла, относящихся именно к этому документу
+  fileMimeType     String
+  fileOriginalName String
+}
+
+model CheckRun {
+  id         String       @id @default(cuid())
+  kind       CheckRunKind
+  summary    String
+  itemsFound Int          @default(0)
+  createdAt  DateTime     @default(now())
+
+  cars            Car[]
+  generalExpenses GeneralExpense[]
+  expenses        Expense[]
+}
+
+model Car {
+  id String @id @default(cuid())
+
+  vin   String @unique // VIN / Fahrzeug-Ident-Nr. — ключ дедупликации
+  make  String // Марка / Hersteller
+  model String // Модель / Typ/Handelsbezeichnung
+  color String?
+
+  previousPlates    String? // Прежние номера / Amtl. Kennzeichen
+  firstRegistration DateTime? // Дата первой регистрации / Erstzulassung — B, Erstzulassung
+
+  displacementCcm Int? // Объём двигателя, см3 / Hubraum — P.1
+  powerKw         Float? // Мощность, кВт / Leistung — P.2
+  powerKwEstimated Boolean @default(false) // расчётное значение из PS
+
+  mileageKm    Int? // Пробег, км — из счёта, как есть
+  owners       Int? // Кол-во владельцев — итог = число у последнего владельца + 1
+  zb2Number    String? // Номер ZB II, крупно слева внизу бланка
+  tuvUntil     DateTime? // Техосмотр до / HU/AU
+
+  fuelType     FuelType      @default(PETROL) // P.3
+  transmission Transmission? // Getriebe
+  bodyType         String? // Fahrzeugtyp (Kleinwagen, Kombi, SUV...)
+  doors            String? // Anzahl Türen (напр. "4/5")
+  condition        String? // Fahrzeugzustand
+  umweltplakette   String? // Umweltplakette
+  emissionClass    String? // Schadstoffklasse (Euro4...)
+  interiorMaterial String? // Material Innenausstattung
+  features         String? // Комплектация: коды через запятую (напр. "AC,NAVI,ABS")
+
+  purchasePriceCents Int? // Закупочная цена, центы — ТОЛЬКО цена машины из счёта, §25a
+  salePriceCents     Int? // Продажная цена, центы
+
+  status CarStatus @default(IN_STOCK)
+  source CarSource? // с какого аукциона
+  lotNumber String? // номер лота на аукционе
+
+  invoiceDate DateTime? // дата закупочного счёта (Rechnungsdatum) — по ней раскладывается архив
+  arrivedAt   DateTime? // когда физически приехала на склад
+  soldAt      DateTime? // дата продажи
+
+  notes String?
+
+  checkRunId String? // непусто — запись создана автопроверкой (почта/аукцион) и ждёт подтверждения на /check
+  checkRun   CheckRun? @relation(fields: [checkRunId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  expenses       Expense[]
+  attachments    Attachment[]
+  documents      Document[]
+  privateEntries PrivateEntry[]
+}
+
+model Expense {
+  id String @id @default(cuid())
+
+  carId String
+  car   Car    @relation(fields: [carId], references: [id], onDelete: Cascade)
+
+  title    String
+  category ExpenseCategory @default(OTHER)
+
+  amountCents    Int // сумма с НДС, центы — точно как в счёте
+  vatAmountCents Int? // Vorsteuer, центы — берётся из счёта, не вычисляется
+
+  date          DateTime?
+  invoiceNumber String?
+
+  note String?
+
+  checkRunId String?
+  checkRun   CheckRun? @relation(fields: [checkRunId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Attachment {
+  id String @id @default(cuid())
+
+  carId String
+  car   Car    @relation(fields: [carId], references: [id], onDelete: Cascade)
+
+  filename     String // stored filename on disk
+  originalName String
+  mimeType     String?
+  sizeBytes    Int?
+  kind         String? // e.g. "zb1" | "invoice" | "other"
+
+  createdAt DateTime @default(now())
+}
+
+/// Услуги/комиссии (Provision) — доход не привязан к конкретной машине
+/// (напр. посредничество при чужой сделке), поэтому отдельная модель, не Expense.
+model Service {
+  id String @id @default(cuid())
+
+  title      String // напр. "Provision für Toyota Yaris"
+  clientName String? // получатель счёта / плательщик
+
+  amountCents    Int // итог с НДС, центы — точно как в счёте
+  vatAmountCents Int? // НДС, центы
+
+  date          DateTime?
+  invoiceNumber String?
+
+  filePath String? // путь в архиве, относительно корня (см. Document.filePath)
+  fileName String?
+
+  note String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+/// Общие расходы бизнеса, не привязанные к конкретной машине (аренда, бухгалтерия,
+/// инструмент и т.п.) — не входят в расчёт прибыли по машине, только в поквартальный отчёт.
+model GeneralExpense {
+  id String @id @default(cuid())
+
+  title    String
+  category GeneralExpenseCategory @default(OTHER)
+
+  amountCents    Int
+  vatAmountCents Int?
+
+  date          DateTime?
+  invoiceNumber String?
+
+  filePath String? // путь в архиве, относительно корня (см. Document.filePath)
+  fileName String?
+
+  note String?
+
+  checkRunId String?
+  checkRun   CheckRun? @relation(fields: [checkRunId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+/// Доп. услуги/расходы мимо официального учёта. Доход всегда привязан к машине
+/// (это её "доп. услуга"), расход можно не привязывать. НЕ участвует ни в расчёте
+/// прибыли по машине (lib/finance.ts), ни в поквартальном отчёте (/report) —
+/// только отдельный учёт на свёрнутой панели карточки и странице /dop-uslugi.
+model PrivateEntry {
+  id String @id @default(cuid())
+
+  kind PrivateEntryKind
+
+  carId String?
+  car   Car?    @relation(fields: [carId], references: [id], onDelete: Cascade)
+
+  title       String
+  amountCents Int
+  date        DateTime?
+  note        String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+/// Ссылка на файл в архиве Руслана на диске (см. раздел 6 ТЗ).
+/// Файл НЕ копируется в приложение — хранится только путь относительно корня архива.
+model Document {
+  id String @id @default(cuid())
+
+  carId String
+  car   Car    @relation(fields: [carId], references: [id], onDelete: Cascade)
+
+  kind     DocumentKind @default(OTHER)
+  filePath String // путь относительно корня архива, напр. "2026/Q3/Juli/Rechnungen/Ankauf COS A4 2397.pdf"
+  fileName String
+  issuedAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@unique([carId, filePath])
+}
