@@ -6,6 +6,8 @@ export type ExpenseForCalc = {
 export type CarForCalc = {
   purchasePrice: number | null | undefined;
   salePrice: number | null | undefined;
+  taxScheme?: "MARGIN_25A" | "REGULAR_19";
+  purchaseVat?: number | null; // входящий НДС на закупку — только при taxScheme=REGULAR_19
 };
 
 export type FinanceBreakdown = {
@@ -24,8 +26,14 @@ export type FinanceBreakdown = {
 };
 
 /**
- * Differenzbesteuerung (§25a UStG) profit calculation.
+ * Differenzbesteuerung (§25a UStG) profit calculation — по умолчанию для всех машин.
  * Пока машина не продана (нет salePrice) — все расчётные поля null, а не 0.
+ *
+ * Редкое исключение — taxScheme=REGULAR_19 (Regelbesteuerung): машина продана с
+ * обычным НДС 19% на полную цену продажи, а не с маржи (напр. когда закупка была
+ * с выделенным входящим НДС). Тогда: НДС = цена продажи × 19/119 (минус вычитаемый
+ * входящий НДС по расходам и по самой закупке — purchaseVat), а доход считается от
+ * цены продажи БЕЗ НДС, а не от маржи.
  *
  * Подоходный налог здесь НЕ считается — общие расходы бизнеса (аренда, бухгалтерия
  * и т.п.) не привязаны к конкретной машине, поэтому реальная налоговая база
@@ -40,6 +48,8 @@ export function calculateFinance(
   const purchasePriceKnown = car.purchasePrice !== null && car.purchasePrice !== undefined;
   const purchasePrice = car.purchasePrice ?? 0;
   const salePrice = car.salePrice ?? null;
+  const isRegular = car.taxScheme === "REGULAR_19";
+  const purchaseVat = car.purchaseVat ?? 0;
 
   const grossExpenses = expenses.reduce((sum, e) => sum + (e.amount || 0), 0);
   const inputVat = expenses.reduce((sum, e) => sum + (e.vatAmount || 0), 0);
@@ -49,12 +59,27 @@ export function calculateFinance(
   // null (не считаем), иначе вся сумма продажи молча превращается в "прибыль" и
   // переплачивается налог/НДС (см. lib/audit.ts, раздел "нет закупочной цены").
   const margin = sold && purchasePriceKnown ? salePrice - purchasePrice : null;
-  const vatOnMargin = margin !== null ? Math.max(margin, 0) * (19 / 119) : null;
-  const vatDue = vatOnMargin !== null ? vatOnMargin - inputVat : null;
   const netExpenses = sold ? grossExpenses - inputVat : null;
-  const taxBase = margin !== null && vatOnMargin !== null && netExpenses !== null
-    ? margin - vatOnMargin - netExpenses
-    : null;
+
+  let vatOnMargin: number | null;
+  let vatDue: number | null;
+  let taxBase: number | null;
+
+  if (isRegular) {
+    vatOnMargin = sold ? salePrice * (19 / 119) : null; // тут это НДС с полной цены продажи, не с маржи
+    vatDue = vatOnMargin !== null ? vatOnMargin - inputVat - purchaseVat : null;
+    taxBase =
+      sold && purchasePriceKnown && vatOnMargin !== null && netExpenses !== null
+        ? salePrice - vatOnMargin - purchasePrice - netExpenses
+        : null;
+  } else {
+    vatOnMargin = margin !== null ? Math.max(margin, 0) * (19 / 119) : null;
+    vatDue = vatOnMargin !== null ? vatOnMargin - inputVat : null;
+    taxBase =
+      margin !== null && vatOnMargin !== null && netExpenses !== null
+        ? margin - vatOnMargin - netExpenses
+        : null;
+  }
 
   return {
     purchasePrice,

@@ -182,6 +182,11 @@ export const TELEGRAM_DOCUMENT_PROMPT = `Ты помощник по вводу �
       "firstRegistration": string | null,// Erstzulassung, формат YYYY-MM-DD — только при PURCHASE, если указана
       "owners": number | null,           // число владельцев (включая нового) — только при PURCHASE, если можно определить
 
+      "isRealInvoice": boolean | null,   // только при EXPENSE — false, если это НЕ настоящий счёт
+                                         //   (Rechnung), а платёжное уведомление посредника (напр.
+                                         //   "Zahlungsinformation" от Billie GmbH — "Erstellt im Namen
+                                         //   von X", без таблицы позиций и НДС). Платёжные уведомления
+                                         //   НИКОГДА не считаются как счета. true — для настоящего счёта.
       "vendor": string | null,           // только при EXPENSE — название продавца/поставщика/мастерской
       "item": string | null,             // только при EXPENSE — краткое название товара/услуги (2-4 слова)
       "invoiceNumber": string | null,    // только при EXPENSE — номер счёта, если есть
@@ -215,12 +220,15 @@ export const MAIL_INVOICE_PROMPT = `Ты помощник по вводу дан
                                   //   BNPL      — комиссия за отсрочку платежа
                                   //   TRANSPORT — доставка/перевозка (Transport, Lieferung, Überführung)
                                   //   OTHER     — всё остальное (запчасти, инструмент, ТЮФ, бухгалтерия, страховка, реклама и т.п.)
+  "isRealInvoice": boolean,       // false, если это НЕ настоящий счёт (Rechnung), а платёжное
+                                  //   уведомление/квитанция посредника — напр. "Zahlungsinformation"
+                                  //   от Billie GmbH ("Erstellt im Namen von X", "Die Billie GmbH hat
+                                  //   den Anspruch auf Zahlung übernommen", просто Betrag/IBAN/
+                                  //   Verwendungszweck БЕЗ таблицы позиций и НДС). Платёжные уведомления
+                                  //   НИКОГДА не считаются как счета — они дублируют/предшествуют
+                                  //   настоящему счёту поставщика, которого в этом письме может не быть.
+                                  //   true — только для настоящего Rechnung/Beleg с товарными позициями.
   "vendor": string | null,        // название продавца/поставщика — кратко, как в шапке счёта.
-                                  //   Billie GmbH / Billie Payments — платёжный посредник по отсрочке
-                                  //   платежа (BNPL) на аукционах COS/AUTO1: верни vendor как есть
-                                  //   ("Billie GmbH"), ничего не додумывай — счета от него дальше
-                                  //   обрабатываются отдельно кодом, т.к. дублируют данные счёта на
-                                  //   саму машину, уже занесённые при заведении карточки.
   "item": string | null,          // краткое название товара/услуги/категории (2-4 слова)
   "invoiceNumber": string | null,
   "invoiceDate": string | null,   // формат YYYY-MM-DD

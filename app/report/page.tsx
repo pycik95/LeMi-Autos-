@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { prisma } from "@/lib/prisma";
 import { calculateFinance } from "@/lib/finance";
-import { carToDTO, generalExpenseToDTO, serviceToDTO } from "@/lib/serialize";
+import { carToDTO, generalExpenseToDTO, serviceToDTO, expenseToDTO } from "@/lib/serialize";
 import { formatEUR, formatDate } from "@/lib/format";
 import { quarterRange, monthRange, currentQuarter, type Period } from "@/lib/period";
 
@@ -21,13 +21,14 @@ type PeriodTotals = {
 };
 
 async function computePeriodTotals(period: Period): Promise<PeriodTotals> {
-  const [soldCars, services, generalExpenses] = await Promise.all([
+  const [soldCars, services, generalExpenses, carExpenses] = await Promise.all([
     prisma.car.findMany({
       where: { status: "SOLD", soldAt: { gte: period.start, lt: period.end } },
       include: { expenses: true },
     }),
     prisma.service.findMany({ where: { date: { gte: period.start, lt: period.end } } }),
     prisma.generalExpense.findMany({ where: { date: { gte: period.start, lt: period.end } } }),
+    prisma.expense.findMany({ where: { date: { gte: period.start, lt: period.end } } }),
   ]);
 
   const carBreakdowns = soldCars.map((car) => {
@@ -36,7 +37,15 @@ async function computePeriodTotals(period: Period): Promise<PeriodTotals> {
   });
 
   const carsIncome = carBreakdowns.reduce((s, b) => s + (b.preTaxIncome ?? 0), 0);
-  const carsVat = carBreakdowns.reduce((s, b) => s + (b.vatDue ?? 0), 0);
+  // НДС с маржи (§25a UStG) возникает в периоде ПРОДАЖИ машины, а входящий НДС
+  // (Vorsteuer) по её расходам — в периоде СЧЁТА (§15 UStG), это разные события.
+  // Раньше весь inputVat машины (за всю её жизнь) списывался в квартал продажи —
+  // расход на ремонт в Q1 у машины, проданной в Q3, "уезжал" в Q3 отчёт, а если
+  // машина к концу квартала ещё не продана — её расходы вообще не попадали в НДС.
+  // Теперь входящий НДС считаем отдельно, по собственной дате каждого счёта.
+  const carsMarginVat = carBreakdowns.reduce((s, b) => s + (b.vatOnMargin ?? 0), 0);
+  const carsInputVat = carExpenses.reduce((s, e) => s + (expenseToDTO(e).vatAmount ?? 0), 0);
+  const carsVat = carsMarginVat - carsInputVat;
 
   const serviceDtos = services.map(serviceToDTO);
   const serviceNet = serviceDtos.reduce((s, x) => s + (x.amount - (x.vatAmount ?? 0)), 0);

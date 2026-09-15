@@ -26,6 +26,8 @@ export interface CarFormState {
   features: string;
   purchasePrice: string;
   salePrice: string;
+  taxScheme: "MARGIN_25A" | "REGULAR_19";
+  purchaseVat: string;
   status: CarStatus;
   source: CarSource | "";
   lotNumber: string;
@@ -60,6 +62,8 @@ export const emptyCarForm: CarFormState = {
   features: "",
   purchasePrice: "",
   salePrice: "",
+  taxScheme: "MARGIN_25A",
+  purchaseVat: "",
   status: "IN_STOCK",
   source: "",
   lotNumber: "",
@@ -95,6 +99,8 @@ export function carToFormState(car: CarDTO): CarFormState {
     features: car.features ?? "",
     purchasePrice: car.purchasePrice?.toString() ?? "",
     salePrice: car.salePrice?.toString() ?? "",
+    taxScheme: car.taxScheme ?? "MARGIN_25A",
+    purchaseVat: car.purchaseVat?.toString() ?? "",
     status: car.status ?? "IN_STOCK",
     source: car.source ?? "",
     lotNumber: car.lotNumber ?? "",
@@ -139,6 +145,8 @@ export function formStateToCarDTO(state: CarFormState, base: CarDTO): CarDTO {
     features: state.features || null,
     purchasePrice: numOrNull(state.purchasePrice),
     salePrice: numOrNull(state.salePrice),
+    taxScheme: state.taxScheme,
+    purchaseVat: numOrNull(state.purchaseVat),
     status: state.status,
     source: state.source || null,
     lotNumber: state.lotNumber || null,
@@ -153,5 +161,7 @@ export function formStateToFinanceInput(state: CarFormState) {
   return {
     purchasePrice: state.purchasePrice === "" ? 0 : Number(state.purchasePrice),
     salePrice: state.salePrice === "" ? null : Number(state.salePrice),
+    taxScheme: state.taxScheme,
+    purchaseVat: state.purchaseVat === "" ? null : Number(state.purchaseVat),
   };
 }

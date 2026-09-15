@@ -402,6 +402,27 @@ export default function CarFields({
             onChange={(e) => onChange("soldAt", e.target.value)}
           />
         </Field>
+        <Field label="Схема налогообложения" hint="меняется только в редких случаях — уточнить у бухгалтера">
+          <select
+            className={inputCls}
+            value={state.taxScheme}
+            onChange={(e) => onChange("taxScheme", e.target.value as CarFormState["taxScheme"])}
+          >
+            <option value="MARGIN_25A">Differenzbesteuerung §25a (по умолчанию)</option>
+            <option value="REGULAR_19">Regelbesteuerung — обычный НДС 19%</option>
+          </select>
+        </Field>
+        {state.taxScheme === "REGULAR_19" && (
+          <Field label="Входящий НДС на закупку, €" hint="только при Regelbesteuerung — вычитается из НДС к уплате">
+            <input
+              type="number"
+              step="0.01"
+              className={inputCls}
+              value={state.purchaseVat}
+              onChange={(e) => onChange("purchaseVat", e.target.value)}
+            />
+          </Field>
+        )}
       </Section>
 
       <Section title="Заметки">

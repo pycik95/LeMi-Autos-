@@ -15,6 +15,7 @@ import {
 
 type MailFields = {
   invoiceType?: string | null;
+  isRealInvoice?: boolean;
   vendor?: string | null;
   item?: string | null;
   invoiceNumber?: string | null;
@@ -84,8 +85,8 @@ export async function POST() {
 
   let itemsCreated = 0;
   let filesSaved = 0;
-  let skippedBillie = 0;
   let skippedDuplicate = 0;
+  let skippedNotInvoice = 0;
   const carCache = new Map<string, string | null>();
   async function carIdByVin(vin: string): Promise<string | null> {
     if (carCache.has(vin)) return carCache.get(vin)!;
@@ -117,6 +118,13 @@ export async function POST() {
       const result = await extractMailInvoiceFields(buffer, "application/pdf");
       if (!result.ok) continue;
       const f = result.fields as MailFields;
+
+      // Платёжное уведомление (напр. Zahlungsinformation от Billie GmbH) — не настоящий счёт,
+      // никогда не заносим как расход, даже если в нём есть сумма. См. lib/extractZulassung.ts.
+      if (f.isRealInvoice === false) {
+        skippedNotInvoice++;
+        continue;
+      }
       if (!f.amount) continue; // без суммы запись бессмысленна
 
       const vendor = (f.vendor || "Неизвестно").trim();
@@ -127,14 +135,6 @@ export async function POST() {
       const vat = f.vatAmount != null && Math.abs(f.vatAmount) <= Math.abs(amount) ? f.vatAmount : null;
       const invoiceDate = f.invoiceDate ? new Date(f.invoiceDate) : new Date();
       const paymentSuffix = f.paymentMethod === "CASH" ? " (нал)" : f.paymentMethod === "CARD" ? " (карта)" : "";
-
-      // Billie GmbH — платёжный посредник по отсрочке платежа (BNPL) на аукционах COS/AUTO1.
-      // Его счета (Vermittlungsgebühr/Auktionsgebühr/сама BNPL-комиссия) дублируют данные,
-      // уже извлечённые из счёта на саму машину при заведении карточки — не заносим их отдельно.
-      if (/billie/i.test(vendor)) {
-        skippedBillie++;
-        continue;
-      }
 
       // Общая подстраховка от задвоения — та же сумма и дата уже есть в базе (письмо пришло
       // повторно, или счёт уже занесён вручную/через сайт).
@@ -199,8 +199,8 @@ export async function POST() {
   }
 
   const skipNote =
-    skippedBillie || skippedDuplicate
-      ? `, пропущено (Billie/BNPL): ${skippedBillie}, пропущено (дубликат): ${skippedDuplicate}`
+    skippedDuplicate || skippedNotInvoice
+      ? `, пропущено (не счёт): ${skippedNotInvoice}, пропущено (дубликат): ${skippedDuplicate}`
       : "";
 
   await prisma.checkRun.update({

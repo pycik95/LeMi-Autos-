@@ -75,10 +75,15 @@ export default async function CarsListPage({
   const sort: SortKey = (sp.sort as SortKey) ?? "invoiceDate";
   const dir = sp.dir === "asc" ? "asc" : sp.dir === "desc" ? "desc" : sort === "make" ? "asc" : "desc";
 
+  // Текстовый поиск (по VIN/марке/модели) ищет конкретную машину — не должен
+  // молча ограничиваться выбранным периодом (иначе поиск существующего VIN
+  // может показать "0 записей", если машина вне текущего квартала).
+  const searchActive = Boolean(sp.q);
+
   const cars = await prisma.car.findMany({
     where: {
       status: activeStatus || undefined,
-      invoiceDate: period ? { gte: period.start, lt: period.end } : undefined,
+      invoiceDate: period && !searchActive ? { gte: period.start, lt: period.end } : undefined,
       ...(sp.q
         ? {
             OR: [
@@ -92,9 +97,8 @@ export default async function CarsListPage({
     include: { expenses: true, documents: true },
   });
 
-  const SALE_DOC_RE = /Kauferträge|Kaufertrage|Kaufvertrag|Verkaufen/i;
   function hasSaleDocument(car: (typeof cars)[number]): boolean {
-    return car.documents.some((d) => SALE_DOC_RE.test(d.filePath));
+    return car.documents.some((d) => d.kind === "SALE_CONTRACT");
   }
 
   const rows = cars.map((car) => {
@@ -237,7 +241,7 @@ export default async function CarsListPage({
               </tr>
             </thead>
             <tbody>
-              {rows.map(({ car, fin }) => (
+              {rows.map(({ car, dto, fin }) => (
                 <tr
                   key={car.id}
                   className="border-b border-slate-100 last:border-0 hover:bg-slate-50 transition-colors"
@@ -257,6 +261,14 @@ export default async function CarsListPage({
                           className="text-xs font-medium text-rose-600 whitespace-nowrap"
                         >
                           ⚠ нет договора
+                        </span>
+                      )}
+                      {dto.taxScheme === "REGULAR_19" && (
+                        <span
+                          title="Regelbesteuerung — обычный НДС 19% с полной цены продажи, не схема маржи §25a"
+                          className="text-xs font-medium text-amber-600 whitespace-nowrap"
+                        >
+                          19% НДС
                         </span>
                       )}
                     </div>

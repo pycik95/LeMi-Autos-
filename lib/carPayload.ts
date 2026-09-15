@@ -50,6 +50,9 @@ export function parseCarPayload(body: Record<string, unknown>): Prisma.CarUnchec
     features: str(body.features),
     purchasePriceCents: eurosToCents(num(body.purchasePrice)),
     salePriceCents: eurosToCents(num(body.salePrice)),
+    taxScheme:
+      (str(body.taxScheme) as Prisma.CarUncheckedCreateInput["taxScheme"]) ?? "MARGIN_25A",
+    purchaseVatCents: eurosToCents(num(body.purchaseVat)),
     status: (str(body.status) as Prisma.CarUncheckedCreateInput["status"]) ?? "IN_STOCK",
     source: str(body.source) as Prisma.CarUncheckedCreateInput["source"],
     lotNumber: str(body.lotNumber),

@@ -74,12 +74,15 @@ export async function runAudit(): Promise<AuditResult> {
   }
 
   // Expense (расходы по машинам) не имеют отдельного поля filePath — путь к файлу упоминается
-  // только текстом в note ("Файл: ...."), см. convention в app/api/check-mail и check-telegram.
-  // Индексируем эти упоминания отдельно, чтобы не считать такие файлы "не обработанными".
+  // только текстом в note, см. convention в app/api/check-mail и check-telegram. На практике
+  // встречаются два префикса ("Файл: ..." и "Скан: ..." — второй из импорта 2024 Q4 andere
+  // Ausgaben, 24 записи) — раньше распознавался только "Файл:", из-за чего /audit ошибочно
+  // считал ~24 реально учтённых файла "необработанными" (см. lib/audit.ts аудит сессии).
+  // Индексируем оба варианта, чтобы не считать такие файлы "не обработанными".
   const notePaths = new Set<string>();
   for (const e of expenses) {
     if (!e.note) continue;
-    const m = e.note.match(/Файл:\s*(.+?\.(?:pdf|jpe?g|png))\.?(?:\s|$)/i);
+    const m = e.note.match(/(?:Файл|Скан):\s*(.+?\.(?:pdf|jpe?g|png))\.?(?:\s|$)/i);
     if (m) notePaths.add(m[1].trim().replace(/\\/g, "/"));
   }
 

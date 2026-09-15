@@ -141,6 +141,8 @@ export interface CarDTO {
   features: string | null;
   purchasePrice: number | null; // евро
   salePrice: number | null; // евро
+  taxScheme: "MARGIN_25A" | "REGULAR_19";
+  purchaseVat: number | null; // евро — только при taxScheme=REGULAR_19
   status: CarStatus;
   source: CarSource | null;
   lotNumber: string | null;

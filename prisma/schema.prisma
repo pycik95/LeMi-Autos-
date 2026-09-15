@@ -29,6 +29,11 @@ enum CarSource {
   COPART
 }
 
+enum TaxScheme {
+  MARGIN_25A // Differenzbesteuerung §25a UStG — по умолчанию, НДС с маржи
+  REGULAR_19 // Regelbesteuerung — обычные 19% НДС с полной цены продажи
+}
+
 enum Transmission {
   MANUAL
   AUTOMATIC
@@ -166,8 +171,11 @@ model Car {
   interiorMaterial String? // Material Innenausstattung
   features         String? // Комплектация: коды через запятую (напр. "AC,NAVI,ABS")
 
-  purchasePriceCents Int? // Закупочная цена, центы — ТОЛЬКО цена машины из счёта, §25a
+  purchasePriceCents Int? // Закупочная цена, центы — ТОЛЬКО цена машины из счёта (netto, без НДС если taxScheme=REGULAR_19)
   salePriceCents     Int? // Продажная цена, центы
+
+  taxScheme        TaxScheme @default(MARGIN_25A) // редкое исключение — машина продана с обычным НДС 19%, не по схеме маржи
+  purchaseVatCents Int? // входящий НДС на закупку — только при taxScheme=REGULAR_19, вычитается из НДС к уплате
 
   status CarStatus @default(IN_STOCK)
   source CarSource? // с какого аукциона

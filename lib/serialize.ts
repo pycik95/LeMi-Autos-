@@ -73,6 +73,8 @@ export function carToDTO(car: CarWithRelations): CarDTO {
     features: car.features,
     purchasePrice: centsToEuros(car.purchasePriceCents),
     salePrice: centsToEuros(car.salePriceCents),
+    taxScheme: car.taxScheme as CarDTO["taxScheme"],
+    purchaseVat: centsToEuros(car.purchaseVatCents),
     status: car.status as CarDTO["status"],
     source: car.source as CarDTO["source"],
     lotNumber: car.lotNumber,

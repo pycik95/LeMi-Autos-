@@ -32,6 +32,7 @@ type TelegramItem = {
   model?: string | null;
   firstRegistration?: string | null;
   owners?: number | null;
+  isRealInvoice?: boolean | null;
   vendor?: string | null;
   item?: string | null;
   invoiceNumber?: string | null;
@@ -403,11 +404,10 @@ async function handleDocumentMessage(token: string, msg: TelegramMessage) {
         continue;
       }
     } else {
-      // Billie GmbH — посредник по отсрочке платежа (BNPL) на аукционах COS/AUTO1. Его счета
-      // дублируют данные, уже извлечённые из счёта на саму машину при заведении карточки —
-      // см. ту же защиту в app/api/check-mail/route.ts.
-      if (it.vendor && /billie/i.test(it.vendor)) {
-        rejected.push(`${label}: счёт от Billie GmbH (BNPL) — уже учтён при заведении карточки машины, пропущено.`);
+      // Платёжное уведомление (напр. Zahlungsinformation от Billie GmbH) — не настоящий счёт,
+      // никогда не заносим как расход. См. lib/extractZulassung.ts.
+      if (it.isRealInvoice === false) {
+        rejected.push(`${label}: это платёжное уведомление, не настоящий счёт — пропущено.`);
         continue;
       }
       if (!it.amount) {
