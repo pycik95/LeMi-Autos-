@@ -7,6 +7,7 @@ import { quarterRange, yearRange, monthRange, currentQuarter } from "@/lib/perio
 import StatusBadge from "@/components/StatusBadge";
 import CheckMailButton from "@/components/CheckMailButton";
 import CheckTelegramButton from "@/components/CheckTelegramButton";
+import CheckAuctionsButton from "@/components/CheckAuctionsButton";
 
 /** Дашборд всегда считается на лету: цифры зависят от текущей даты и данных в БД. */
 export const dynamic = "force-dynamic";
@@ -236,12 +237,7 @@ export default async function DashboardPage() {
         </Link>
         <CheckMailButton />
         <CheckTelegramButton />
-        <Link
-          href="/check"
-          className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"
-        >
-          Проверить аукционы
-        </Link>
+        <CheckAuctionsButton />
       </div>
     </div>
   );

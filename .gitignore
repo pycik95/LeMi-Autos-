@@ -41,6 +41,9 @@ yarn-error.log*
 /prisma/dev.db-journal
 /storage/uploads/
 
+# saved browser sessions for auction sites (cookies — never commit)
+/.auth/
+
 # local-only Claude Code settings
 /.claude/settings.local.json
 

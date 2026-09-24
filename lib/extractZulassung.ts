@@ -185,8 +185,15 @@ export const TELEGRAM_DOCUMENT_PROMPT = `Ты помощник по вводу �
       "isRealInvoice": boolean | null,   // только при EXPENSE — false, если это НЕ настоящий счёт
                                          //   (Rechnung), а платёжное уведомление посредника (напр.
                                          //   "Zahlungsinformation" от Billie GmbH — "Erstellt im Namen
-                                         //   von X", без таблицы позиций и НДС). Платёжные уведомления
-                                         //   НИКОГДА не считаются как счета. true — для настоящего счёта.
+                                         //   von X", без таблицы позиций и НДС) ИЛИ накладная на доставку
+                                         //   (Lieferschein/Lieferliste/Packing List) — у нёй тоже может
+                                         //   быть таблица товаров с ценами, но это НЕ счёт. ПРАВИЛО: true
+                                         //   можно поставить, ТОЛЬКО если в документе буквально написано
+                                         //   слово "Rechnung" (или "Invoice"/"Quittung"/"Beleg" как
+                                         //   заголовок) — если документ называет себя Lieferschein/
+                                         //   Lieferliste/Auftragsbestätigung/Versandbestätigung, это
+                                         //   false, даже если сумма и товар совпадают с реальным счётом,
+                                         //   который может прийти отдельным письмом позже.
       "vendor": string | null,           // только при EXPENSE — название продавца/поставщика/мастерской
       "item": string | null,             // только при EXPENSE — краткое название товара/услуги (2-4 слова)
       "invoiceNumber": string | null,    // только при EXPENSE — номер счёта, если есть
@@ -227,7 +234,14 @@ export const MAIL_INVOICE_PROMPT = `Ты помощник по вводу дан
                                   //   Verwendungszweck БЕЗ таблицы позиций и НДС). Платёжные уведомления
                                   //   НИКОГДА не считаются как счета — они дублируют/предшествуют
                                   //   настоящему счёту поставщика, которого в этом письме может не быть.
-                                  //   true — только для настоящего Rechnung/Beleg с товарными позициями.
+                                  //   ТО ЖЕ САМОЕ касается накладных на доставку (Lieferschein/
+                                  //   Lieferliste/Packing List) — у них тоже может быть таблица товаров
+                                  //   с ценами, но это НЕ счёт, настоящий Rechnung за тот же заказ может
+                                  //   прийти отдельным письмом позже с другой датой/номером документа.
+                                  //   ПРАВИЛО: true можно поставить, ТОЛЬКО если в документе буквально
+                                  //   написано слово "Rechnung" (или "Invoice"/"Quittung"/"Beleg" как
+                                  //   заголовок документа) — если документ называет себя Lieferschein/
+                                  //   Lieferliste/Auftragsbestätigung/Versandbestätigung, это false.
   "vendor": string | null,        // название продавца/поставщика — кратко, как в шапке счёта.
   "item": string | null,          // краткое название товара/услуги/категории (2-4 слова)
   "invoiceNumber": string | null,
@@ -244,6 +258,34 @@ export const MAIL_INVOICE_PROMPT = `Ты помощник по вводу дан
 }
 
 Если поле не читается или отсутствует — верни null для него. Даты — только в формате YYYY-MM-DD. Числа — только число, без единиц измерения и без символа валюты. vatAmount никогда не должен быть больше amount — если получается больше, значит перепутано с другой суммой в документе, верни null.`;
+
+/**
+ * Для кнопки "Проверить аукционы" — на входе текст страницы "Мои закупки"/"Оплаченные лоты"
+ * CarOnSale или AUTO1 (снят через Playwright), а не файл. Нужно вытащить список выигранных лотов.
+ */
+export const AUCTION_LOTS_PROMPT = `Ты помощник по вводу данных б/у автомобилей в Германии. Ниже — текст страницы
+"мои закупки/оплаченные лоты" аукциона подержанных автомобилей ({SITE}), снятый из браузера пользователя.
+Найди в этом тексте ВСЕ выигранные/оплаченные лоты (машины) и извлеки по каждому данные.
+
+Верни СТРОГО валидный JSON без markdown-разметки, без пояснений, только объект вида:
+
+{
+  "lots": [
+    {
+      "vin": string | null,          // VIN, 17 символов. В VIN НИКОГДА не бывает букв I, O, Q — если видишь их,
+                                     //   это цифры 1, 0, 0. Если VIN на странице не показан — null (не выдумывай).
+      "make": string | null,
+      "model": string | null,
+      "lotNumber": string | null,    // номер лота
+      "price": number | null,        // цена машины (без учёта отдельных сборов), €
+      "date": string | null,         // дата покупки/счёта, формат YYYY-MM-DD, если видна
+      "mileageKm": number | null     // пробег, если показан на странице
+    }
+  ]
+}
+
+Если на странице нет ни одного лота (пусто, ещё не залогинен, ошибка загрузки) — верни {"lots": []}.
+Не додумывай значения, которых нет в тексте — верни null для них.`;
 
 export type ExtractResult =
   | { ok: true; fields: unknown }
@@ -423,4 +465,46 @@ export async function extractTelegramBatchFields(
   if (last.ok || !looksTransient(last.error)) return last;
   last = await extractOnce(buffer, mimeType, "invoice", TELEGRAM_DOCUMENT_PROMPT, 8192);
   return last;
+}
+
+/** Текстовый (не файловый) вызов модели — для кнопки "Проверить аукционы" (см. AUCTION_LOTS_PROMPT). */
+export async function extractAuctionLots(pageText: string, siteLabel: string): Promise<ExtractResult> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    return { ok: false, status: 400, error: "ANTHROPIC_API_KEY не задан в .env — распознавание недоступно" };
+  }
+
+  const prompt = AUCTION_LOTS_PROMPT.replace("{SITE}", siteLabel) + `\n\n--- текст страницы ---\n${pageText.slice(0, 40000)}`;
+
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model: "claude-sonnet-5",
+      max_tokens: 4096,
+      messages: [{ role: "user", content: prompt }],
+    }),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => "");
+    return { ok: false, status: 502, error: `Anthropic API вернул ошибку: ${res.status} ${errText}` };
+  }
+
+  const result = await res.json();
+  const text = result?.content?.find((b: { type: string }) => b.type === "text")?.text ?? "";
+  try {
+    return { ok: true, fields: parseModelJson(text) };
+  } catch (err) {
+    return {
+      ok: false,
+      status: 502,
+      error: `Не удалось разобрать ответ модели: ${err instanceof Error ? err.message : err}`,
+      raw: text.slice(0, 500),
+    };
+  }
 }
