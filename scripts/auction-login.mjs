@@ -27,7 +27,7 @@ const authDir = path.join(process.cwd(), ".auth");
 fs.mkdirSync(authDir, { recursive: true });
 const statePath = path.join(authDir, `${key}.json`);
 
-const browser = await chromium.launch({ headless: false });
+const browser = await chromium.launch({ headless: false, channel: "msedge" });
 const context = await browser.newContext();
 const page = await context.newPage();
 await page.goto(site.url);

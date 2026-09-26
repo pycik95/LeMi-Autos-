@@ -17,8 +17,16 @@ export function applyExtractedFields(
     next.powerKwEstimated = false;
   }
   if (fields.zbIiNumber) next.zb2Number = String(fields.zbIiNumber);
+  if (fields.owners !== null && fields.owners !== undefined) next.owners = String(fields.owners);
+  if (fields.doors) next.doors = String(fields.doors);
+  if (fields.emissionClass) next.emissionClass = String(fields.emissionClass);
+  if (typeof fields.fuelType === "string" && FUEL_TYPES.includes(fields.fuelType)) {
+    next.fuelType = fields.fuelType as CarFormState["fuelType"];
+  }
   return next;
 }
+
+const FUEL_TYPES = ["PETROL", "DIESEL", "CNG", "LPG", "ELECTRIC", "HYBRID", "OTHER"];
 
 /** Merges a recognized счёт покупки (purchase invoice) into the car's own fields. */
 export function applyInvoiceToCarFields(

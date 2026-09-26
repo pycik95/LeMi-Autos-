@@ -287,6 +287,140 @@ export const AUCTION_LOTS_PROMPT = `Ты помощник по вводу дан
 Если на странице нет ни одного лота (пусто, ещё не залогинен, ошибка загрузки) — верни {"lots": []}.
 Не додумывай значения, которых нет в тексте — верни null для них.`;
 
+/**
+ * Карточка/страница "все детали автомобиля" конкретного лота (AUTO1 — отдельная страница
+ * /merchant/car/{id}; CarOnSale — боковая панель, открывается кликом по названию модели в списке
+ * закупок). Текст может быть на русском, английском или немецком — зависит от сайта и языка
+ * интерфейса аккаунта, поэтому промпт не завязан на конкретные фразы одного языка.
+ */
+export const AUCTION_CAR_DETAIL_PROMPT = `Ты помощник по вводу данных б/у автомобилей в Германии. Ниже — текст страницы/панели
+"полные детали автомобиля" одного купленного лота с аукциона подержанных машин (AUTO1 или CarOnSale),
+снятый из браузера пользователя. Текст может быть на русском, английском или немецком языке.
+
+ВАЖНО про CarOnSale: на странице может быть текст, который выглядит как бессмысленный набор букв
+(НЕ настоящие слова ни на одном языке, напр. "kblfxrtpwnojmplvsfrqzxv" или "Plkw-TzNv Xkqv Bnwtoa") —
+это заблокированный платной подпиской контент (история сервисной книжки, отчёт carVertical и т.п.),
+намеренно скрытый/обфусцированный сайтом. ПОЛНОСТЬЮ игнорируй такие фрагменты — не пытайся их
+интерпретировать, не используй как данные.
+
+Верни СТРОГО валидный JSON без markdown-разметки, без пояснений, только объект вида:
+
+{
+  "color": string | null,          // Цвет — переведи на немецкий и верни СТРОГО одно значение из списка:
+                                   //   Beige, Blau, Braun, Gelb, Gold, Grau, Grün, Orange, Rot, Schwarz, Silber, Violet, Weiß
+  "fuelType": string | null,       // строго одно из: PETROL, DIESEL, CNG, LPG, ELECTRIC, HYBRID, OTHER
+  "transmission": string | null,   // строго одно из: MANUAL, AUTOMATIC
+  "bodyType": string | null,       // строго одно значение из списка:
+                                   //   Kleinwagen, Limousine, Kombi, Cabrio, SUV/Geländewagen, Van/Bus, Coupé, Andere Fahrzeugtypen
+  "doors": string | null,          // количество дверей — строго одно из: "2/3", "4/5", "6/7", "Andere Türanzahl"
+  "emissionClass": string | null,  // Schadstoffklasse, напр. "Euro4"
+  "interiorMaterial": string | null, // Обивка/материал салона — строго одно значение из списка:
+                                   //   Vollleder, Teilleder, Stoff, Velours, Alcantara, Andere Materialien Innenausstattung
+                                   //   ("Ткань" = Stoff, "Кожа" = Vollleder, "Велюр" = Velours)
+  "condition": string | null,      // строго одно из: "Beschädigtes Fahrzeug", "Unbeschädigtes Fahrzeug".
+                                   //   Beschädigtes, если на странице указано ДТП/аварийное повреждение
+                                   //   (accident damage / Unfallschaden / "после аварии: Да") или в
+                                   //   разделе повреждений перечислены конкретные повреждённые зоны
+                                   //   кузова (не просто толщина краски/косметика). Unbeschädigtes,
+                                   //   если явно написано, что следов аварии/ДТП нет (напр. "No
+                                   //   indication of existing accident damage", "после аварии: Нет").
+                                   //   Если раздел о повреждениях вообще отсутствует — верни null.
+  "features": string[],            // комплектация — верни массив кодов из списка ниже, включай код,
+                                   //   только если соответствующий пункт явно упомянут в разделе про
+                                   //   оборудование/комплектацию (Equipment/Ausstattung/АВТОМОБИЛЬНОЕ
+                                   //   ОБОРУДОВАНИЕ) — не додумывай по типу/марке машины:
+                                   //   TOW_BAR (фаркоп), ALLOY_WHEELS (легкосплавные диски), PARK_ASSIST (парктроник),
+                                   //   XENON_LED (ксенон/светодиодные фары), AC (кондиционер/климат-контроль),
+                                   //   SUNROOF (люк/панорамная крыша), NAVI (навигация), SEAT_HEATING (подогрев сидений),
+                                   //   RADIO (радио/магнитола), CRUISE_CONTROL (круиз-контроль), BLUETOOTH,
+                                   //   NON_SMOKER (не курили), HANDS_FREE (громкая связь), ABS, SERVICE_BOOK (сервисная книжка)
+                                   //   Пустой массив, если ничего не подходит.
+  "owners": number | null,         // количество предыдущих владельцев
+  "mileageKm": number | null,      // пробег, если указан
+  "firstRegistration": string | null, // дата первой регистрации, формат YYYY-MM-DD
+  "engineCcm": number | null,      // объём двигателя, см3
+  "powerKw": number | null,        // мощность, кВт
+  "tuvUntil": string | null        // техосмотр до, формат YYYY-MM-DD
+}
+
+Если поле не читается или отсутствует на странице — верни null для него (для features — не включай код). Не додумывай значения.
+Даты только YYYY-MM-DD. Числа — без единиц измерения.`;
+
+/**
+ * Вырезает строки с "тарабарщиной" — платный контент CarOnSale (история сервисной книжки,
+ * carVertical-отчёт и т.п.) рендерится на странице как обфусцированный набор букв для
+ * неподписчиков (напр. "kblfxrtpwnojmplvsfrqzxv", "Plkw-TzNv Xkqv Bnwtoa"). Помимо того что это
+ * не настоящие данные, такие строки (длинные последовательности согласных без гласных) иногда
+ * ложно триггерят safety-классификатор модели (отказ с категорией "bio") — поэтому вырезаем их
+ * ДО отправки в модель, а не полагаемся только на инструкцию в промпте их игнорировать.
+ */
+function stripObfuscatedText(text: string): string {
+  const isGibberish = (word: string): boolean => {
+    const letters = word.replace(/[^a-zA-Zа-яА-Я]/g, "");
+    return letters.length >= 4 && /^[b-df-hj-np-tv-zбвгджзйклмнпрстфхцчшщ]+$/i.test(letters);
+  };
+
+  return text
+    .split("\n")
+    .filter((line) => {
+      const words = line.split(/\s+/).filter(Boolean);
+      if (words.length === 0) return true;
+      const gibberishCount = words.filter(isGibberish).length;
+      return gibberishCount === 0 || gibberishCount / words.length < 0.5;
+    })
+    .join("\n");
+}
+
+/** Для страницы/панели "все детали автомобиля" отдельного лота AUTO1 или CarOnSale (см. AUCTION_CAR_DETAIL_PROMPT). */
+export async function extractAuctionCarDetail(pageText: string): Promise<ExtractResult> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    return { ok: false, status: 400, error: "ANTHROPIC_API_KEY не задан в .env — распознавание недоступно" };
+  }
+
+  const cleanedText = stripObfuscatedText(pageText);
+  const prompt = AUCTION_CAR_DETAIL_PROMPT + `\n\n--- текст страницы ---\n${cleanedText.slice(0, 20000)}`;
+
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model: "claude-sonnet-5",
+      max_tokens: 2048,
+      messages: [{ role: "user", content: prompt }],
+    }),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => "");
+    return { ok: false, status: 502, error: `Anthropic API вернул ошибку: ${res.status} ${errText}` };
+  }
+
+  const result = await res.json();
+  if (result?.stop_reason === "refusal") {
+    return {
+      ok: false,
+      status: 502,
+      error: `Модель отказалась обработать страницу (категория: ${result?.stop_details?.category ?? "?"})`,
+    };
+  }
+  const text = result?.content?.find((b: { type: string }) => b.type === "text")?.text ?? "";
+  try {
+    return { ok: true, fields: parseModelJson(text) };
+  } catch (err) {
+    return {
+      ok: false,
+      status: 502,
+      error: `Не удалось разобрать ответ модели: ${err instanceof Error ? err.message : err}`,
+      raw: text.slice(0, 500),
+    };
+  }
+}
+
 export type ExtractResult =
   | { ok: true; fields: unknown }
   | { ok: false; status: number; error: string; raw?: string };
