@@ -54,6 +54,11 @@ function sanitize(name: string): string {
   return name.replace(/[\\/:*?"<>|]/g, "-").trim();
 }
 
+/** Сумма в имени файла — как у писем (см. app/api/check-mail/route.ts): "1234,56". */
+function fmtSum(n: number): string {
+  return n.toFixed(2).replace(".", ",");
+}
+
 /**
  * Определяет тип счёта по подписи ссылки на сайте аукциона — текст может быть на русском,
  * английском или немецком (зависит от языка интерфейса аккаунта). "Подтверждение заказа"/
@@ -357,7 +362,8 @@ export async function POST(req: Request) {
 
             for (const doc of pendingDocs) {
               if (doc.kind === "purchase") {
-                const fileName = sanitize(`${baseFileName}.pdf`);
+                const sum = finalPriceCents != null ? ` ${fmtSum(finalPriceCents / 100)}` : "";
+                const fileName = sanitize(`${baseFileName}${sum}.pdf`);
                 const relPath = `${folder}/${fileName}`;
                 try {
                   fs.writeFileSync(path.join(destDir, fileName), doc.buffer);
@@ -370,7 +376,10 @@ export async function POST(req: Request) {
                 continue;
               }
 
-              const fileName = sanitize(`${baseFileName}${INVOICE_FILE_SUFFIX[doc.kind]}.pdf`);
+              const f = doc.fields as { amount?: number | null; vatAmount?: number | null; invoiceDate?: string | null; invoiceNumber?: string | null };
+              if (f.amount == null) continue;
+
+              const fileName = sanitize(`${baseFileName}${INVOICE_FILE_SUFFIX[doc.kind]} ${fmtSum(f.amount)}.pdf`);
               let savedPath: string | null = null;
               try {
                 fs.writeFileSync(path.join(destDir, fileName), doc.buffer);
@@ -379,8 +388,6 @@ export async function POST(req: Request) {
                 // не удалось сохранить файл — всё равно заносим сумму расхода
               }
 
-              const f = doc.fields as { amount?: number | null; vatAmount?: number | null; invoiceDate?: string | null; invoiceNumber?: string | null };
-              if (f.amount == null) continue;
               const expDate = f.invoiceDate ? new Date(f.invoiceDate) : finalInvoiceDate ?? new Date();
               const amountCents = Math.round(f.amount * 100);
               const dup = await prisma.expense.findFirst({ where: { carId: car.id, amountCents, date: expDate } });
