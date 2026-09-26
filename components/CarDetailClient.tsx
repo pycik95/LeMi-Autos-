@@ -42,9 +42,11 @@ export default function CarDetailClient({
   );
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [confirming, setConfirming] = useState(false);
   const [extracting, setExtracting] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [checkRunId, setCheckRunId] = useState(initialCar.checkRunId);
 
   function handleChange<K extends keyof CarFormState>(field: K, value: CarFormState[K]) {
     setState((prev) => ({ ...prev, [field]: value }));
@@ -70,6 +72,17 @@ export default function CarDetailClient({
       setError(err instanceof Error ? err.message : "Ошибка сохранения");
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function handleConfirm() {
+    setConfirming(true);
+    try {
+      await fetch(`/api/cars/${initialCar.id}/dismiss-check`, { method: "POST" });
+      setCheckRunId(null);
+      router.refresh();
+    } finally {
+      setConfirming(false);
     }
   }
 
@@ -152,6 +165,15 @@ export default function CarDetailClient({
           >
             Удалить
           </button>
+          {checkRunId && (
+            <button
+              onClick={handleConfirm}
+              disabled={confirming}
+              className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
+            >
+              {confirming ? "..." : "Подтвердить"}
+            </button>
+          )}
           <button
             onClick={handleSave}
             disabled={saving}
@@ -161,6 +183,13 @@ export default function CarDetailClient({
           </button>
         </div>
       </div>
+
+      {checkRunId && (
+        <div className="mb-6 rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-sm text-amber-800">
+          Найдено автопроверкой, ещё не подтверждено — не учитывается в дашборде, списке машин,
+          расходах и отчёте. Проверьте данные и нажмите «Подтвердить», либо «Удалить», если запись не нужна.
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 space-y-6">

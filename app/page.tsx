@@ -50,7 +50,9 @@ export default async function DashboardPage() {
   const mPeriod = monthRange(now.getFullYear(), now.getMonth() + 1);
   const yPeriod = yearRange(year);
 
+  // checkRunId != null — карточка ещё не подтверждена на /check, в дашборд/отчёты не попадает
   const cars = await prisma.car.findMany({
+    where: { checkRunId: null },
     include: { expenses: true, attachments: true, documents: true },
     orderBy: [{ invoiceDate: "desc" }, { createdAt: "desc" }],
   });
@@ -94,7 +96,7 @@ export default async function DashboardPage() {
 
   const inputVatQuarter = await prisma.expense
     .findMany({
-      where: { date: { gte: qPeriod.start, lt: qPeriod.end } },
+      where: { date: { gte: qPeriod.start, lt: qPeriod.end }, checkRunId: null },
       select: { vatAmountCents: true },
     })
     .then((rows) => rows.reduce((s, r) => s + (r.vatAmountCents ?? 0), 0) / 100);

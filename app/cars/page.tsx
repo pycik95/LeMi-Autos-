@@ -82,6 +82,7 @@ export default async function CarsListPage({
 
   const cars = await prisma.car.findMany({
     where: {
+      checkRunId: null, // ещё не подтверждённые на /check карточки сюда не попадают
       status: activeStatus || undefined,
       invoiceDate: period && !searchActive ? { gte: period.start, lt: period.end } : undefined,
       ...(sp.q

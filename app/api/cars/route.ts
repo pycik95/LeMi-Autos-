@@ -8,7 +8,7 @@ export async function GET(req: NextRequest) {
   const status = req.nextUrl.searchParams.get("status");
 
   const cars = await prisma.car.findMany({
-    where: status ? { status: status as never } : undefined,
+    where: { checkRunId: null, status: status ? (status as never) : undefined },
     include: { expenses: true },
     orderBy: [{ invoiceDate: "desc" }, { createdAt: "desc" }],
   });

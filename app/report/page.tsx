@@ -23,12 +23,12 @@ type PeriodTotals = {
 async function computePeriodTotals(period: Period): Promise<PeriodTotals> {
   const [soldCars, services, generalExpenses, carExpenses] = await Promise.all([
     prisma.car.findMany({
-      where: { status: "SOLD", soldAt: { gte: period.start, lt: period.end } },
+      where: { status: "SOLD", soldAt: { gte: period.start, lt: period.end }, checkRunId: null },
       include: { expenses: true },
     }),
     prisma.service.findMany({ where: { date: { gte: period.start, lt: period.end } } }),
-    prisma.generalExpense.findMany({ where: { date: { gte: period.start, lt: period.end } } }),
-    prisma.expense.findMany({ where: { date: { gte: period.start, lt: period.end } } }),
+    prisma.generalExpense.findMany({ where: { date: { gte: period.start, lt: period.end }, checkRunId: null } }),
+    prisma.expense.findMany({ where: { date: { gte: period.start, lt: period.end }, checkRunId: null } }),
   ]);
 
   const carBreakdowns = soldCars.map((car) => {
@@ -106,7 +106,7 @@ export default async function ReportPage({
   const profitAfterTax = quarterTotals.incomeBase - incomeTax;
 
   const soldCars = await prisma.car.findMany({
-    where: { status: "SOLD", soldAt: { gte: qPeriod.start, lt: qPeriod.end } },
+    where: { status: "SOLD", soldAt: { gte: qPeriod.start, lt: qPeriod.end }, checkRunId: null },
     include: { expenses: true },
     orderBy: { soldAt: "asc" },
   });

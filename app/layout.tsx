@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import Link from "next/link";
+import { prisma } from "@/lib/prisma";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -18,7 +19,14 @@ export const metadata: Metadata = {
   description: "Учёт закупки, продажи и прибыли по б/у автомобилям",
 };
 
-export default function RootLayout({ children }: LayoutProps<"/">) {
+export default async function RootLayout({ children }: LayoutProps<"/">) {
+  const [pendingCars, pendingExpenses, pendingGeneral] = await Promise.all([
+    prisma.car.count({ where: { checkRunId: { not: null } } }),
+    prisma.expense.count({ where: { checkRunId: { not: null } } }),
+    prisma.generalExpense.count({ where: { checkRunId: { not: null } } }),
+  ]);
+  const pendingCount = pendingCars + pendingExpenses + pendingGeneral;
+
   return (
     <html
       lang="ru"
@@ -33,6 +41,17 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
             <nav className="flex items-center gap-6 text-sm">
               <Link href="/" className="text-slate-600 hover:text-slate-900 transition-colors">
                 Дашборд
+              </Link>
+              <Link
+                href="/check"
+                className="relative text-slate-600 hover:text-slate-900 transition-colors"
+              >
+                Проверка
+                {pendingCount > 0 && (
+                  <span className="absolute -top-2 -right-3 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-amber-500 text-white text-[10px] font-semibold">
+                    {pendingCount}
+                  </span>
+                )}
               </Link>
               <Link href="/cars" className="text-slate-600 hover:text-slate-900 transition-colors">
                 Машины

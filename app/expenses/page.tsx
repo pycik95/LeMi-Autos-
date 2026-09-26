@@ -40,7 +40,7 @@ export default async function ExpensesPage({
   // Машины предлагаем в фильтре, только если у них есть расходы в выбранном периоде —
   // иначе выбор машины без активности в периоде всегда даёт пустой список без объяснения.
   const carsWithActivity = await prisma.car.findMany({
-    where: { expenses: { some: { date: { gte: period.start, lt: period.end } } } },
+    where: { expenses: { some: { date: { gte: period.start, lt: period.end }, checkRunId: null } } },
     orderBy: [{ make: "asc" }, { model: "asc" }],
     select: { id: true, make: true, model: true, vin: true },
   });
@@ -52,6 +52,7 @@ export default async function ExpensesPage({
             carId: selectedCarId,
             category: carCategory,
             date: { gte: period.start, lt: period.end },
+            checkRunId: null,
           },
           include: { car: true },
           orderBy: [{ date: "desc" }, { createdAt: "desc" }],
@@ -59,7 +60,7 @@ export default async function ExpensesPage({
       : Promise.resolve([]),
     showGeneral
       ? prisma.generalExpense.findMany({
-          where: { category: genCategory, date: { gte: period.start, lt: period.end } },
+          where: { category: genCategory, date: { gte: period.start, lt: period.end }, checkRunId: null },
           orderBy: [{ date: "desc" }, { createdAt: "desc" }],
         })
       : Promise.resolve([]),
