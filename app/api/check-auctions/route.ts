@@ -3,8 +3,10 @@ import path from "path";
 import { NextResponse } from "next/server";
 import { chromium } from "playwright";
 import { prisma } from "@/lib/prisma";
-import { extractAuctionLots, extractAuctionCarDetail } from "@/lib/extractZulassung";
+import { extractAuctionLots, extractAuctionCarDetail, extractDocumentFields } from "@/lib/extractZulassung";
+import { archiveFolderFor, ARCHIVE_ROOT } from "@/lib/archive";
 import type { Prisma } from "@prisma/client";
+import type { BrowserContext } from "playwright";
 
 type SiteKey = "cos" | "auto1";
 
@@ -43,6 +45,48 @@ type CarDetail = {
 
 const FUEL_TYPES = ["PETROL", "DIESEL", "CNG", "LPG", "ELECTRIC", "HYBRID", "OTHER"];
 const TRANSMISSIONS = ["MANUAL", "AUTOMATIC"];
+
+type InvoiceLink = { href: string; text: string };
+type InvoiceKind = "purchase" | "brokerage" | "bnpl" | "transport";
+
+/** Имя файла в архиве не должно содержать зарезервированные Windows символы. */
+function sanitize(name: string): string {
+  return name.replace(/[\\/:*?"<>|]/g, "-").trim();
+}
+
+/**
+ * Определяет тип счёта по подписи ссылки на сайте аукциона — текст может быть на русском,
+ * английском или немецком (зависит от языка интерфейса аккаунта). "Подтверждение заказа"/
+ * proforma — не настоящий счёт (аналог правила "isRealInvoice" для почты), пропускаем.
+ */
+function classifyInvoiceLink(text: string): InvoiceKind | null {
+  const t = text.toLowerCase();
+  if (/proforma|подтверждение заказа|order confirmation|auftragsbestätigung/.test(t)) return null;
+  if (/transport|трансп/.test(t)) return "transport";
+  if (/buy now,?\s*pay later|bnpl/.test(t)) return "bnpl";
+  if (/vehicle invoice|сч[её]т-фактура за авто|fahrzeugrechnung/.test(t)) return "purchase";
+  if (/vehicle brokerage|аукционный сч[её]т|auction invoice|vermittlung|сч[её]т за услугу|service invoice/.test(t)) {
+    return "brokerage";
+  }
+  return null;
+}
+
+const INVOICE_FILE_SUFFIX: Record<Exclude<InvoiceKind, "purchase">, string> = {
+  brokerage: " Vermittlungsgebühr",
+  bnpl: " BNPL Gebühr",
+  transport: " Transport",
+};
+
+async function downloadPdf(context: BrowserContext, href: string, baseUrl: string): Promise<Buffer | null> {
+  try {
+    const absUrl = href.startsWith("http") ? href : `${baseUrl}${href}`;
+    const resp = await context.request.get(absUrl);
+    if (!resp.ok()) return null;
+    return await resp.body();
+  } catch {
+    return null;
+  }
+}
 
 /** Превращает распознанные детали лота AUTO1 в поля для Car — только валидные значения. */
 function detailToCarData(d: CarDetail): Prisma.CarUncheckedCreateInput {
@@ -137,15 +181,22 @@ export async function POST(req: Request) {
         // (/merchant/car/{id}, ссылка есть только в href, в видимом тексте её нет — поэтому
         // достаём напрямую из DOM списка, сопоставляя по VIN).
         const detailUrlByVin: Record<string, string> = {};
+        // Ссылки на счета (проформа/счёт на машину/сбор/транспорт) — тоже только в href.
+        const invoiceLinksByVin: Record<string, InvoiceLink[]> = {};
         if (key === "auto1") {
           const cards = await page.$$eval(".myOrders-card", (els) =>
             els.map((el) => ({
               vin: el.querySelector('[data-qa-id="myOrders_car_vin"]')?.textContent?.trim() ?? null,
               href: el.querySelector('a[data-qa-id="myOrders_car_title"]')?.getAttribute("href") ?? null,
+              links: Array.from(el.querySelectorAll('a[href*="/finance/invoice/"]')).map((a) => ({
+                href: a.getAttribute("href") || "",
+                text: a.textContent?.trim() || "",
+              })),
             }))
           );
           for (const c of cards) {
             if (c.vin && c.href) detailUrlByVin[c.vin.toUpperCase()] = c.href;
+            if (c.vin) invoiceLinksByVin[c.vin.toUpperCase()] = c.links;
           }
         }
 
@@ -210,24 +261,147 @@ export async function POST(req: Request) {
             }
           }
 
+          // --- Счета лота: собираем ссылки, скачиваем PDF, распознаём каждый своим промптом ---
+          let invoiceLinks: InvoiceLink[] = [];
+          if (key === "auto1") {
+            invoiceLinks = invoiceLinksByVin[vin] ?? [];
+          } else {
+            try {
+              const cosCard = page.locator("app-finished-checkout-card", { hasText: vin });
+              if ((await cosCard.count()) > 0) {
+                invoiceLinks = await cosCard
+                  .first()
+                  .locator('a[href*="cloudinary.com"]')
+                  .evaluateAll((as) =>
+                    as.map((a) => ({ href: a.getAttribute("href") || "", text: a.textContent?.trim() || "" }))
+                  );
+              }
+            } catch {
+              // не нашли ссылки на счета — не критично, создаём машину без них
+            }
+          }
+
+          const seenHrefs = new Set<string>();
+          const pendingDocs: { kind: InvoiceKind; buffer: Buffer; fields: Record<string, unknown> }[] = [];
+          for (const link of invoiceLinks) {
+            if (!link.href || seenHrefs.has(link.href)) continue;
+            seenHrefs.add(link.href);
+            const kind = classifyInvoiceLink(link.text);
+            if (!kind) continue;
+            const buffer = await downloadPdf(context, link.href, "https://www.auto1.com");
+            if (!buffer) continue;
+            const docType = kind === "purchase" ? "purchase_invoice" : "invoice";
+            const extractResult = await extractDocumentFields(buffer, "application/pdf", docType);
+            if (!extractResult.ok) continue;
+            pendingDocs.push({ kind, buffer, fields: extractResult.fields as Record<string, unknown> });
+          }
+
+          // Счёт на машину — уточняем цену/дату/пробег и дозаполняем характеристики поверх
+          // того, что уже нашли на странице/в карточке лота (та остаётся приоритетнее для
+          // состояния/комплектации — их в счёте нет).
+          let finalPriceCents = lot.price != null ? Math.round(lot.price * 100) : null;
+          let finalInvoiceDate = lot.date ? new Date(lot.date) : null;
+          let finalMileageKm = lot.mileageKm ? Math.round(lot.mileageKm) : null;
+          const purchaseDoc = pendingDocs.find((d) => d.kind === "purchase");
+          if (purchaseDoc) {
+            const pf = purchaseDoc.fields as {
+              vehiclePrice?: number | null;
+              invoiceDate?: string | null;
+              mileageKm?: number | null;
+            };
+            if (pf.vehiclePrice != null) finalPriceCents = Math.round(pf.vehiclePrice * 100);
+            if (pf.invoiceDate) {
+              const d = new Date(pf.invoiceDate);
+              if (!Number.isNaN(d.getTime())) finalInvoiceDate = d;
+            }
+            if (pf.mileageKm != null) finalMileageKm = Math.round(pf.mileageKm);
+            detailData = { ...detailToCarData(purchaseDoc.fields as CarDetail), ...detailData };
+            gotDetail = true;
+          }
+
+          const notes = purchaseDoc
+            ? `Найдено автопроверкой аукциона (${site.label}) — счёт на машину скачан и приложен, данные уточнены по нему${gotDetail ? " и по карточке лота" : ""}.`
+            : `Найдено автопроверкой аукциона (${site.label}) — данные неполные (только то, что видно на странице закупок${gotDetail ? " и в карточке лота" : ""}), дождитесь счёта на почту для деталей и документа.`;
+
           const car = await prisma.car.create({
             data: {
               ...detailData,
               vin,
               make: lot.make || "?",
               model: lot.model || "?",
-              mileageKm: lot.mileageKm ? Math.round(lot.mileageKm) : null,
-              purchasePriceCents: lot.price != null ? Math.round(lot.price * 100) : null,
+              mileageKm: finalMileageKm,
+              purchasePriceCents: finalPriceCents,
               lotNumber: lot.lotNumber || null,
               source: site.source,
-              invoiceDate: lot.date ? new Date(lot.date) : null,
+              invoiceDate: finalInvoiceDate,
               status: "IN_STOCK",
-              notes: `Найдено автопроверкой аукциона (${site.label}) — данные неполные (только то, что видно на странице закупок${gotDetail ? " и в карточке лота" : ""}), дождитесь счёта на почту для деталей и документа.`,
+              notes,
               checkRunId: run.id,
             },
           });
           createdCars.push({ id: car.id, vin: car.vin, make: car.make, model: car.model });
           newCars++;
+
+          // Сохраняем скачанные счета в архив (та же раскладка и именование, что у почты/ТЗ:
+          // "Ankauf {COS|AUTO1} {Модель} {ID}[ Тип].pdf") и заводим Document/Expense.
+          if (pendingDocs.length > 0) {
+            const archiveId = key === "cos" ? vin.slice(-4) : lot.lotNumber || vin.slice(-4);
+            const baseFileName = sanitize(`Ankauf ${key === "cos" ? "COS" : "AUTO1"} ${lot.model || car.model} ${archiveId}`);
+            const folder = archiveFolderFor(finalInvoiceDate || new Date(), "Rechnungen");
+            const destDir = path.join(ARCHIVE_ROOT, folder.replace(/\//g, "\\"));
+            try {
+              fs.mkdirSync(destDir, { recursive: true });
+            } catch {
+              // не удалось создать папку архива — пропускаем сохранение файлов
+            }
+
+            for (const doc of pendingDocs) {
+              if (doc.kind === "purchase") {
+                const fileName = sanitize(`${baseFileName}.pdf`);
+                const relPath = `${folder}/${fileName}`;
+                try {
+                  fs.writeFileSync(path.join(destDir, fileName), doc.buffer);
+                  await prisma.document.create({
+                    data: { carId: car.id, kind: "PURCHASE_INVOICE", filePath: relPath, fileName, issuedAt: finalInvoiceDate },
+                  });
+                } catch {
+                  // файл с таким путём уже привязан к машине, либо не удалось записать — пропускаем
+                }
+                continue;
+              }
+
+              const fileName = sanitize(`${baseFileName}${INVOICE_FILE_SUFFIX[doc.kind]}.pdf`);
+              let savedPath: string | null = null;
+              try {
+                fs.writeFileSync(path.join(destDir, fileName), doc.buffer);
+                savedPath = `${folder}/${fileName}`;
+              } catch {
+                // не удалось сохранить файл — всё равно заносим сумму расхода
+              }
+
+              const f = doc.fields as { amount?: number | null; vatAmount?: number | null; invoiceDate?: string | null; invoiceNumber?: string | null };
+              if (f.amount == null) continue;
+              const expDate = f.invoiceDate ? new Date(f.invoiceDate) : finalInvoiceDate ?? new Date();
+              const amountCents = Math.round(f.amount * 100);
+              const dup = await prisma.expense.findFirst({ where: { carId: car.id, amountCents, date: expDate } });
+              if (dup) continue;
+
+              await prisma.expense.create({
+                data: {
+                  carId: car.id,
+                  title:
+                    doc.kind === "transport" ? "Транспорт" : doc.kind === "bnpl" ? "Комиссия за отсрочку (BNPL)" : "Аукционный сбор",
+                  category: doc.kind === "transport" ? "DELIVERY" : "AUCTION_FEE",
+                  amountCents,
+                  vatAmountCents: f.vatAmount != null && Math.abs(f.vatAmount) <= Math.abs(f.amount) ? Math.round(f.vatAmount * 100) : null,
+                  date: expDate,
+                  invoiceNumber: f.invoiceNumber || null,
+                  note: `Найдено автопроверкой аукциона (${site.label}).${savedPath ? ` Файл: ${savedPath}.` : ""}`,
+                  checkRunId: run.id,
+                },
+              });
+            }
+          }
         }
         perSite[key] = { status: "ok", lotsFound: lots.length, newCars };
       } catch (err) {
