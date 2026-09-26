@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { parseCarPayload } from "@/lib/carPayload";
 import { carToDTO } from "@/lib/serialize";
 import { unlink } from "fs/promises";
+import { archivePathFromNote, removeArchiveFilesIfUnreferenced } from "@/lib/archiveCleanup";
 import path from "path";
 
 type Params = { params: Promise<{ id: string }> };
@@ -57,6 +58,17 @@ export async function DELETE(_req: NextRequest, { params }: Params) {
     }
   }
 
+  // Неподтверждённая карточка (автопроверка) — её счета в архив положила сама проверка,
+  // поэтому при удалении убираем и их. У подтверждённой машины файлы архива не трогаем.
+  const car = await prisma.car.findUnique({
+    where: { id },
+    select: { checkRunId: true, documents: { select: { filePath: true } }, expenses: { select: { note: true } } },
+  });
+  const archivePaths = car?.checkRunId
+    ? [...car.documents.map((d) => d.filePath), ...car.expenses.map((e) => archivePathFromNote(e.note))]
+    : [];
+
   await prisma.car.delete({ where: { id } });
+  await removeArchiveFilesIfUnreferenced(archivePaths);
   return NextResponse.json({ ok: true });
 }

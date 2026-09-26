@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { eurosToCents, generalExpenseToDTO } from "@/lib/serialize";
+import { removeArchiveFilesIfUnreferenced } from "@/lib/archiveCleanup";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -29,6 +30,9 @@ export async function PATCH(req: NextRequest, { params }: Params) {
 
 export async function DELETE(_req: NextRequest, { params }: Params) {
   const { id } = await params;
+  const existing = await prisma.generalExpense.findUnique({ where: { id }, select: { checkRunId: true, filePath: true } });
   await prisma.generalExpense.delete({ where: { id } });
+  // Файл неподтверждённой записи положила в архив сама автопроверка — убираем вместе с ней.
+  if (existing?.checkRunId) await removeArchiveFilesIfUnreferenced([existing.filePath]);
   return NextResponse.json({ ok: true });
 }

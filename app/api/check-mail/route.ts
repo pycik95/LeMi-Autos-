@@ -87,6 +87,8 @@ export async function POST() {
   let filesSaved = 0;
   let skippedDuplicate = 0;
   let skippedNotInvoice = 0;
+  let purchaseAttached = 0;
+  let skippedPurchaseNoCar = 0;
   const carCache = new Map<string, string | null>();
   async function carIdByVin(vin: string): Promise<string | null> {
     if (carCache.has(vin)) return carCache.get(vin)!;
@@ -135,6 +137,44 @@ export async function POST() {
       const vat = f.vatAmount != null && Math.abs(f.vatAmount) <= Math.abs(amount) ? f.vatAmount : null;
       const invoiceDate = f.invoiceDate ? new Date(f.invoiceDate) : new Date();
       const paymentSuffix = f.paymentMethod === "CASH" ? " (нал)" : f.paymentMethod === "CARD" ? " (карта)" : "";
+      const vin = f.vin ? f.vin.trim().toUpperCase() : null;
+
+      // Счёт на саму машину — это закупочная цена карточки, а НЕ расход. Раньше он заводился
+      // расходом «Прочее» на ту же машину, и цена машины считалась дважды (в карточке и в
+      // расходах). Теперь только прикладываем PDF к карточке как документ.
+      if (f.invoiceType === "PURCHASE") {
+        const car = vin ? await prisma.car.findUnique({ where: { vin }, include: { documents: true } }) : null;
+        if (!car) {
+          skippedPurchaseNoCar++;
+          continue;
+        }
+        if (car.documents.some((d) => d.kind === "PURCHASE_INVOICE")) {
+          skippedDuplicate++;
+          continue;
+        }
+        const folder = archiveFolderFor(invoiceDate, "Rechnungen");
+        const destDir = path.join(ARCHIVE_ROOT, folder.replace(/\//g, "\\"));
+        const fileName =
+          car.source === "CAR_ON_SALE" || car.source === "AUTO1"
+            ? sanitize(
+                `Ankauf ${car.source === "CAR_ON_SALE" ? "COS" : "AUTO1"} ${car.model} ${
+                  car.source === "CAR_ON_SALE" ? vin!.slice(-4) : car.lotNumber || vin!.slice(-4)
+                } ${fmtSum(amount)}.pdf`
+              )
+            : sanitize(`${vendor} ${item} ${fmtSum(amount)}${paymentSuffix}.pdf`);
+        try {
+          fs.mkdirSync(destDir, { recursive: true });
+          fs.writeFileSync(path.join(destDir, fileName), buffer);
+          await prisma.document.create({
+            data: { carId: car.id, kind: "PURCHASE_INVOICE", filePath: `${folder}/${fileName}`, fileName, issuedAt: invoiceDate },
+          });
+          filesSaved++;
+          purchaseAttached++;
+        } catch {
+          // не удалось сохранить файл или такой путь уже привязан — ничего не заводим
+        }
+        continue;
+      }
 
       // Общая подстраховка от задвоения — та же сумма и дата уже есть в базе (письмо пришло
       // повторно, или счёт уже занесён вручную/через сайт).
@@ -158,7 +198,6 @@ export async function POST() {
         // не удалось сохранить файл — всё равно заносим данные, просто без filePath
       }
 
-      const vin = f.vin ? f.vin.trim().toUpperCase() : null;
       const carId = vin ? await carIdByVin(vin) : null;
 
       if (carId) {
@@ -175,10 +214,7 @@ export async function POST() {
           },
         });
       } else {
-        const note =
-          f.invoiceType === "PURCHASE" && vin
-            ? `Найдено автопроверкой почты. Похоже на счёт на покупку машины (VIN ${vin} не найден в базе) — завести карточку вручную.`
-            : "Найдено автопроверкой почты.";
+        const note = "Найдено автопроверкой почты.";
         await prisma.generalExpense.create({
           data: {
             title: `${vendor} — ${item}`,
@@ -198,10 +234,15 @@ export async function POST() {
     }
   }
 
-  const skipNote =
+  const skipNote = [
     skippedDuplicate || skippedNotInvoice
       ? `, пропущено (не счёт): ${skippedNotInvoice}, пропущено (дубликат): ${skippedDuplicate}`
-      : "";
+      : "",
+    purchaseAttached ? `, счетов на машину приложено к карточкам: ${purchaseAttached}` : "",
+    skippedPurchaseNoCar
+      ? `, счетов на машину без карточки в базе: ${skippedPurchaseNoCar} (запустите «Проверить аукционы»)`
+      : "",
+  ].join("");
 
   await prisma.checkRun.update({
     where: { id: run.id },

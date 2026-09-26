@@ -277,8 +277,13 @@ export const AUCTION_LOTS_PROMPT = `Ты помощник по вводу дан
       "make": string | null,
       "model": string | null,
       "lotNumber": string | null,    // номер лота
-      "price": number | null,        // цена машины (без учёта отдельных сборов), €
-      "date": string | null,         // дата покупки/счёта, формат YYYY-MM-DD, если видна
+      "price": number | null,        // цена САМОЙ машины, € (напр. "purchased for", "Vehicle invoice",
+                                     //   "Счет-фактура за авто"). НЕ итог к оплате (Total amount / Итого)
+                                     //   и НЕ сумма машины со сборами/транспортом/BNPL. Если на странице
+                                     //   видна только общая сумма без разбивки — верни null, не угадывай.
+      "date": string | null,         // дата покупки/аукциона/счёта, формат YYYY-MM-DD. НЕ дата вывоза
+                                     //   машины ("Vehicle picked up", "Fahrzeug abgeholt") и НЕ дата
+                                     //   доставки — если видна только она, верни null.
       "mileageKm": number | null     // пробег, если показан на странице
     }
   ]
@@ -373,39 +378,51 @@ function stripObfuscatedText(text: string): string {
 
 /** Для страницы/панели "все детали автомобиля" отдельного лота AUTO1 или CarOnSale (см. AUCTION_CAR_DETAIL_PROMPT). */
 export async function extractAuctionCarDetail(pageText: string): Promise<ExtractResult> {
+  const cleanedText = stripObfuscatedText(pageText);
+  const prompt = AUCTION_CAR_DETAIL_PROMPT + `\n\n--- текст страницы ---\n${cleanedText.slice(0, 20000)}`;
+  return callModel(prompt, 2048);
+}
+
+/**
+ * Единственное место, где ходим в Anthropic API. Никогда не бросает исключение — сетевой сбой,
+ * битый ответ или отказ модели возвращаются как { ok: false }, чтобы один неудачный документ
+ * не обрывал всю проверку почты/аукционов/Telegram.
+ */
+async function callModel(content: unknown, maxTokens: number): Promise<ExtractResult> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     return { ok: false, status: 400, error: "ANTHROPIC_API_KEY не задан в .env — распознавание недоступно" };
   }
 
-  const cleanedText = stripObfuscatedText(pageText);
-  const prompt = AUCTION_CAR_DETAIL_PROMPT + `\n\n--- текст страницы ---\n${cleanedText.slice(0, 20000)}`;
-
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model: "claude-sonnet-5",
-      max_tokens: 2048,
-      messages: [{ role: "user", content: prompt }],
-    }),
-  });
-
-  if (!res.ok) {
-    const errText = await res.text().catch(() => "");
-    return { ok: false, status: 502, error: `Anthropic API вернул ошибку: ${res.status} ${errText}` };
+  let result;
+  try {
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: "claude-sonnet-5",
+        max_tokens: maxTokens,
+        messages: [{ role: "user", content }],
+      }),
+    });
+    if (!res.ok) {
+      const errText = await res.text().catch(() => "");
+      return { ok: false, status: 502, error: `Anthropic API вернул ошибку: ${res.status} ${errText}` };
+    }
+    result = await res.json();
+  } catch (err) {
+    return { ok: false, status: 502, error: `Сетевая ошибка при обращении к модели: ${err instanceof Error ? err.message : err}` };
   }
 
-  const result = await res.json();
   if (result?.stop_reason === "refusal") {
     return {
       ok: false,
       status: 502,
-      error: `Модель отказалась обработать страницу (категория: ${result?.stop_details?.category ?? "?"})`,
+      error: `Модель отказалась обработать документ (категория: ${result?.stop_details?.category ?? "?"})`,
     };
   }
   const text = result?.content?.find((b: { type: string }) => b.type === "text")?.text ?? "";
@@ -487,17 +504,10 @@ async function extractOnce(
   mimeType: string,
   documentType: DocumentType,
   promptOverride?: string,
+  // 1024 было мало для длинных промптов (Teil II с несколькими блоками владельцев) —
+  // ответ иногда обрезался посреди JSON вместе с thinking-блоком.
   maxTokens = 4096
 ): Promise<ExtractResult> {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    return {
-      ok: false,
-      status: 400,
-      error: "ANTHROPIC_API_KEY не задан в .env — распознавание недоступно",
-    };
-  }
-
   const isPdf = mimeType === "application/pdf";
   const base64 = buffer.toString("base64");
   const contentBlock = isPdf
@@ -505,51 +515,12 @@ async function extractOnce(
     : { type: "image", source: { type: "base64", media_type: mimeType || "image/jpeg", data: base64 } };
 
   const prompt = promptOverride ?? promptForType(documentType);
-
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model: "claude-sonnet-5",
-      // 1024 было мало для длинных промптов (Teil II с несколькими блоками владельцев) —
-      // ответ иногда обрезался посреди JSON вместе с thinking-блоком.
-      max_tokens: maxTokens,
-      messages: [
-        {
-          role: "user",
-          content: [contentBlock, { type: "text", text: prompt }],
-        },
-      ],
-    }),
-  });
-
-  if (!res.ok) {
-    const errText = await res.text().catch(() => "");
-    return { ok: false, status: 502, error: `Anthropic API вернул ошибку: ${res.status} ${errText}` };
-  }
-
-  const result = await res.json();
-  const text = result?.content?.find((b: { type: string }) => b.type === "text")?.text ?? "";
-
-  try {
-    return { ok: true, fields: parseModelJson(text) };
-  } catch (err) {
-    return {
-      ok: false,
-      status: 502,
-      error: `Не удалось разобрать ответ модели: ${err instanceof Error ? err.message : err}`,
-      raw: text.slice(0, 500),
-    };
-  }
+  return callModel([contentBlock, { type: "text", text: prompt }], maxTokens);
 }
 
-/** Похоже на обрыв/пустой ответ, а не на содержательный отказ модели — стоит повторить. */
+/** Обрыв ответа или сетевой сбой, а не содержательный отказ модели — стоит повторить. */
 function looksTransient(error: string): boolean {
-  return /не удалось разобрать ответ модели/i.test(error);
+  return /не удалось разобрать ответ модели|сетевая ошибка/i.test(error);
 }
 
 export async function extractDocumentFields(
@@ -603,42 +574,6 @@ export async function extractTelegramBatchFields(
 
 /** Текстовый (не файловый) вызов модели — для кнопки "Проверить аукционы" (см. AUCTION_LOTS_PROMPT). */
 export async function extractAuctionLots(pageText: string, siteLabel: string): Promise<ExtractResult> {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    return { ok: false, status: 400, error: "ANTHROPIC_API_KEY не задан в .env — распознавание недоступно" };
-  }
-
   const prompt = AUCTION_LOTS_PROMPT.replace("{SITE}", siteLabel) + `\n\n--- текст страницы ---\n${pageText.slice(0, 40000)}`;
-
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model: "claude-sonnet-5",
-      max_tokens: 4096,
-      messages: [{ role: "user", content: prompt }],
-    }),
-  });
-
-  if (!res.ok) {
-    const errText = await res.text().catch(() => "");
-    return { ok: false, status: 502, error: `Anthropic API вернул ошибку: ${res.status} ${errText}` };
-  }
-
-  const result = await res.json();
-  const text = result?.content?.find((b: { type: string }) => b.type === "text")?.text ?? "";
-  try {
-    return { ok: true, fields: parseModelJson(text) };
-  } catch (err) {
-    return {
-      ok: false,
-      status: 502,
-      error: `Не удалось разобрать ответ модели: ${err instanceof Error ? err.message : err}`,
-      raw: text.slice(0, 500),
-    };
-  }
+  return callModel(prompt, 4096);
 }

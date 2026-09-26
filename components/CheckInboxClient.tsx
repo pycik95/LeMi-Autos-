@@ -50,7 +50,7 @@ export default function CheckInboxClient({
 
   // Удалить — полностью убирает запись (и, для машины, файлы вложений/расходы/документы) из базы.
   async function deleteCar(id: string, label: string) {
-    if (!confirm(`Удалить машину ${label} насовсем? Это необратимо.`)) return;
+    if (!confirm(`Удалить машину ${label} насовсем — вместе со скачанными автопроверкой счетами в архиве? Это необратимо.`)) return;
     setCars((prev) => prev.filter((c) => c.id !== id));
     setExpenses((prev) => prev.filter((e) => e.carId !== id)); // каскадно удалится и на сервере
     await fetch(`/api/cars/${id}`, { method: "DELETE" });

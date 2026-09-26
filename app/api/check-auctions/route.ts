@@ -146,7 +146,14 @@ export async function POST(req: Request) {
     data: { kind: "AUCTION", summary: "Проверка в процессе…", itemsFound: 0 },
   });
 
-  const browser = await chromium.launch({ headless: true, channel: "msedge" });
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true, channel: "msedge" });
+  } catch (err) {
+    const summary = `Не удалось запустить браузер: ${err instanceof Error ? err.message : String(err)}`;
+    await prisma.checkRun.update({ where: { id: run.id }, data: { summary } });
+    return NextResponse.json({ error: summary }, { status: 500 });
+  }
 
   try {
     for (const key of sites) {
@@ -157,7 +164,17 @@ export async function POST(req: Request) {
         continue;
       }
 
-      const context = await browser.newContext({ storageState: statePath });
+      let context;
+      try {
+        context = await browser.newContext({ storageState: statePath });
+      } catch (err) {
+        perSite[key] = {
+          status: `не удалось открыть сохранённую сессию — перелогиньтесь: node scripts/auction-login.mjs ${key} (${err instanceof Error ? err.message : String(err)})`,
+          lotsFound: 0,
+          newCars: 0,
+        };
+        continue;
+      }
       const page = await context.newPage();
       try {
         await page.goto(site.url, { waitUntil: "domcontentloaded", timeout: 30000 });
@@ -334,7 +351,7 @@ export async function POST(req: Request) {
 
           const notes = purchaseDoc
             ? `Найдено автопроверкой аукциона (${site.label}) — счёт на машину скачан и приложен, данные уточнены по нему${gotDetail ? " и по карточке лота" : ""}.`
-            : `Найдено автопроверкой аукциона (${site.label}) — данные неполные (только то, что видно на странице закупок${gotDetail ? " и в карточке лота" : ""}), дождитесь счёта на почту для деталей и документа.`;
+            : `Найдено автопроверкой аукциона (${site.label}) — счёт на машину скачать НЕ удалось, цена и дата взяты со страницы списка закупок${gotDetail ? " (характеристики — из карточки лота)" : ""}. Перед подтверждением сверьте цену и дату со счётом.`;
 
           const car = await prisma.car.create({
             data: {
