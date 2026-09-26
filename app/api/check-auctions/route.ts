@@ -139,7 +139,7 @@ export async function POST(req: Request) {
   }
 
   const authDir = path.join(process.cwd(), ".auth");
-  const perSite: Record<string, { status: string; lotsFound: number; newCars: number }> = {};
+  const perSite: Record<string, { status: string; lotsFound: number; newCars: number; lotErrors?: number }> = {};
   const createdCars: { id: string; vin: string; make: string; model: string }[] = [];
 
   const run = await prisma.checkRun.create({
@@ -206,11 +206,13 @@ export async function POST(req: Request) {
         }
 
         let newCars = 0;
+        let lotErrors = 0;
         for (const lot of lots) {
           const vin = String(lot.vin).trim().toUpperCase();
           const existing = await prisma.car.findUnique({ where: { vin } });
           if (existing) continue;
 
+          try {
           let detailData: Prisma.CarUncheckedCreateInput = {} as Prisma.CarUncheckedCreateInput;
           let gotDetail = false;
 
@@ -296,7 +298,13 @@ export async function POST(req: Request) {
             const buffer = await downloadPdf(context, link.href, "https://www.auto1.com");
             if (!buffer) continue;
             const docType = kind === "purchase" ? "purchase_invoice" : "invoice";
-            const extractResult = await extractDocumentFields(buffer, "application/pdf", docType);
+            let extractResult;
+            try {
+              extractResult = await extractDocumentFields(buffer, "application/pdf", docType);
+            } catch {
+              // модель/сеть споткнулись на этом счёте — не теряем остальные счета и саму машину
+              continue;
+            }
             if (!extractResult.ok) continue;
             pendingDocs.push({ kind, buffer, fields: extractResult.fields as Record<string, unknown> });
           }
@@ -409,8 +417,20 @@ export async function POST(req: Request) {
               });
             }
           }
+          } catch (lotErr) {
+            // Один лот (счёт не скачался, модель споткнулась и т.п.) не должен обрывать всю
+            // партию — машина по нему просто не создастся в этом прогоне, подхватится в
+            // следующей проверке. Уже созданные до сбоя машины/файлы остаются как есть.
+            lotErrors++;
+            console.error(`Лот ${vin} (${site.label}): ошибка обработки —`, lotErr);
+          }
         }
-        perSite[key] = { status: "ok", lotsFound: lots.length, newCars };
+        perSite[key] = {
+          status: "ok",
+          lotsFound: lots.length,
+          newCars,
+          ...(lotErrors > 0 ? { lotErrors } : {}),
+        };
       } catch (err) {
         perSite[key] = {
           status: `ошибка: ${err instanceof Error ? err.message : String(err)}`,
@@ -426,7 +446,12 @@ export async function POST(req: Request) {
   }
 
   const summary = sites
-    .map((k) => `${SITES[k].label}: ${perSite[k].status === "ok" ? `лотов ${perSite[k].lotsFound}, новых машин ${perSite[k].newCars}` : perSite[k].status}`)
+    .map((k) => {
+      const s = perSite[k];
+      if (s.status !== "ok") return `${SITES[k].label}: ${s.status}`;
+      const errSuffix = s.lotErrors ? `, ошибок по лотам: ${s.lotErrors}` : "";
+      return `${SITES[k].label}: лотов ${s.lotsFound}, новых машин ${s.newCars}${errSuffix}`;
+    })
     .join(" | ");
 
   await prisma.checkRun.update({
