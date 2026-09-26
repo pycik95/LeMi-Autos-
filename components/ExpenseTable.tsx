@@ -105,13 +105,21 @@ export default function ExpenseTable({
           </thead>
           <tbody>
             {expenses.map((e) => (
-              <tr key={e.id} className="border-b border-slate-50 hover:bg-slate-50/50">
+              <tr
+                key={e.id}
+                className={`border-b border-slate-50 ${e.checkRunId ? "bg-amber-50/70" : "hover:bg-slate-50/50"}`}
+              >
                 <td className="px-4 py-1.5">
                   <input
                     className={inputCls}
                     defaultValue={e.title}
                     onBlur={(ev) => updateExpense(e.id, { title: ev.target.value })}
                   />
+                  {e.checkRunId && (
+                    <div className="text-[11px] text-amber-700 mt-0.5">
+                      не подтверждён — не входит в отчёты и НДС
+                    </div>
+                  )}
                 </td>
                 <td className="px-4 py-1.5">
                   <select
@@ -172,7 +180,16 @@ export default function ExpenseTable({
                     onBlur={(ev) => updateExpense(e.id, { note: ev.target.value })}
                   />
                 </td>
-                <td className="px-4 py-1.5">
+                <td className="px-4 py-1.5 whitespace-nowrap">
+                  {e.checkRunId && (
+                    <button
+                      type="button"
+                      onClick={() => updateExpense(e.id, { checkRunId: null })}
+                      className="text-emerald-600 hover:text-emerald-800 text-xs font-medium mr-3"
+                    >
+                      Подтвердить
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => deleteExpense(e.id)}

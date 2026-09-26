@@ -80,6 +80,8 @@ export default function CarDetailClient({
     try {
       await fetch(`/api/cars/${initialCar.id}/dismiss-check`, { method: "POST" });
       setCheckRunId(null);
+      // dismiss-check подтверждает и расходы этой машины
+      setExpenses((prev) => prev.map((e) => ({ ...e, checkRunId: null })));
       router.refresh();
     } finally {
       setConfirming(false);
@@ -217,7 +219,10 @@ export default function CarDetailClient({
         </div>
 
         <div className="sticky top-20 space-y-4">
-          <FinancePanel car={formStateToFinanceInput(state)} expenses={expenses} />
+          <FinancePanel
+            car={formStateToFinanceInput(state)}
+            expenses={checkRunId ? expenses : expenses.filter((e) => !e.checkRunId)}
+          />
           <PrivateEntriesPanel
             carId={initialCar.id}
             entries={privateEntries}

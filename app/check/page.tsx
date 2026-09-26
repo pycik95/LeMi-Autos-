@@ -5,7 +5,7 @@ import CheckInboxClient from "@/components/CheckInboxClient";
 
 export const dynamic = "force-dynamic";
 
-const KIND_LABELS: Record<string, string> = { MAIL: "Почта", AUCTION: "Аукцион" };
+const KIND_LABELS: Record<string, string> = { MAIL: "Почта", AUCTION: "Аукцион", TELEGRAM: "Telegram" };
 
 export default async function CheckPage() {
   const [cars, generalExpenses, expenses, runs] = await Promise.all([
@@ -19,7 +19,12 @@ export default async function CheckPage() {
       include: { car: { select: { id: true, make: true, model: true } } },
       orderBy: { createdAt: "desc" },
     }),
-    prisma.checkRun.findMany({ orderBy: { createdAt: "desc" }, take: 20 }),
+    // Пустые проверки Telegram (ни одного сообщения) — просто шум, в истории их не показываем.
+    prisma.checkRun.findMany({
+      where: { NOT: { kind: "TELEGRAM", itemsFound: 0, summary: { startsWith: "Сообщений: 0" } } },
+      orderBy: { createdAt: "desc" },
+      take: 20,
+    }),
   ]);
 
   const carItems = cars.map((c) => {
@@ -46,16 +51,10 @@ export default async function CheckPage() {
 
       <div className="rounded-lg bg-slate-50 border border-slate-200 px-4 py-3 mb-6 text-xs text-slate-600 space-y-1">
         <p>
-          Эта страница не запускается сама — проверку выполняю я (Claude) по вашей просьбе в чате.
-        </p>
-        <p>
-          <b>Почта:</b> просто напишите «проверь почту» — у меня уже есть доступ к вашему Gmail в
-          текущей сессии.
-        </p>
-        <p>
-          <b>Аукционы:</b> кнопка «Проверить аукционы» на дашборде — сама заходит на CarOnSale/AUTO1
-          (нужен разовый вход через <code>node scripts/auction-login.mjs cos|auto1</code>), находит
-          новые лоты, скачивает счета и заполняет карточку.
+          Проверки запускаются кнопками на дашборде: <b>«Проверить почту»</b> (счета из Gmail),
+          <b> «Проверить аукционы»</b> (новые лоты CarOnSale/AUTO1 — карточка машины и счета; нужен
+          разовый вход через <code>node scripts/auction-login.mjs cos|auto1</code>) и
+          <b> «Проверить Telegram»</b> (документы, присланные боту — их вы подтверждаете прямо в чате).
         </p>
         <p>
           Ниже — то, что уже найдено и создано, но ещё <b>не подтверждено</b>: в дашборд, список машин,

@@ -525,7 +525,12 @@ export async function POST() {
   await prisma.telegramState.update({ where: { id: state.id }, data: { lastUpdateId: newOffset } });
 
   const summary = `Сообщений: ${messages.length}, документов: ${documentsSeen}, действий с кнопками: ${callbacksHandled}`;
-  await prisma.checkRun.update({ where: { id: run.id }, data: { summary, itemsFound: documentsSeen } });
+  if (updates.length === 0) {
+    // Боту ничего не писали — не засоряем историю проверок пустой записью.
+    await prisma.checkRun.delete({ where: { id: run.id } });
+  } else {
+    await prisma.checkRun.update({ where: { id: run.id }, data: { summary, itemsFound: documentsSeen } });
+  }
 
   return NextResponse.json({ itemsFound: documentsSeen, summary });
 }
