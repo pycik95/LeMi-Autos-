@@ -25,7 +25,8 @@ export default function CheckMailButton() {
       }
       setMessage(data.summary || "Готово");
       setState("done");
-      setTimeout(() => router.push("/check"), 1200);
+      router.refresh();
+      setTimeout(() => setState("idle"), 1500);
     } catch (e) {
       setMessage(e instanceof Error ? e.message : String(e));
       setState("idle");

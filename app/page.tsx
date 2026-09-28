@@ -5,9 +5,6 @@ import { carToDTO } from "@/lib/serialize";
 import { formatEUR, formatDate } from "@/lib/format";
 import { quarterRange, yearRange, monthRange, currentQuarter } from "@/lib/period";
 import StatusBadge from "@/components/StatusBadge";
-import CheckMailButton from "@/components/CheckMailButton";
-import CheckTelegramButton from "@/components/CheckTelegramButton";
-import CheckAuctionsButton from "@/components/CheckAuctionsButton";
 
 /** Дашборд всегда считается на лету: цифры зависят от текущей даты и данных в БД. */
 export const dynamic = "force-dynamic";
@@ -237,9 +234,6 @@ export default async function DashboardPage() {
         >
           + Добавить машину
         </Link>
-        <CheckMailButton />
-        <CheckTelegramButton />
-        <CheckAuctionsButton />
       </div>
     </div>
   );

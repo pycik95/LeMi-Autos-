@@ -2,6 +2,9 @@ import { prisma } from "@/lib/prisma";
 import { carToDTO, expenseToDTO, generalExpenseToDTO, checkRunToDTO } from "@/lib/serialize";
 import { formatDate } from "@/lib/format";
 import CheckInboxClient from "@/components/CheckInboxClient";
+import CheckMailButton from "@/components/CheckMailButton";
+import CheckTelegramButton from "@/components/CheckTelegramButton";
+import CheckAuctionsButton from "@/components/CheckAuctionsButton";
 
 export const dynamic = "force-dynamic";
 
@@ -49,12 +52,18 @@ export default async function CheckPage() {
         </p>
       </div>
 
+      <div className="flex flex-wrap items-start gap-3 mb-4">
+        <CheckMailButton />
+        <CheckTelegramButton />
+        <CheckAuctionsButton />
+      </div>
+
       <div className="rounded-lg bg-slate-50 border border-slate-200 px-4 py-3 mb-6 text-xs text-slate-600 space-y-1">
         <p>
-          Проверки запускаются кнопками на дашборде: <b>«Проверить почту»</b> (счета из Gmail),
-          <b> «Проверить аукционы»</b> (новые лоты CarOnSale/AUTO1 — карточка машины и счета; нужен
-          разовый вход через <code>node scripts/auction-login.mjs cos|auto1</code>) и
-          <b> «Проверить Telegram»</b> (документы, присланные боту — их вы подтверждаете прямо в чате).
+          <b>«Проверить почту»</b> — счета из Gmail. <b>«Проверить аукционы»</b> — новые лоты
+          CarOnSale/AUTO1: карточка машины и счета (нужен разовый вход через{" "}
+          <code>node scripts/auction-login.mjs cos|auto1</code>). <b>«Проверить Telegram»</b> —
+          документы, присланные боту (их вы подтверждаете прямо в чате).
         </p>
         <p>
           Ниже — то, что уже найдено и создано, но ещё <b>не подтверждено</b>: в дашборд, список машин,
@@ -65,6 +74,8 @@ export default async function CheckPage() {
 
       <h2 className="text-sm font-semibold text-slate-900 mb-3">Требует подтверждения</h2>
       <CheckInboxClient
+        // новые записи после проверки → перемонтировать, чтобы список обновился
+        key={[...carItems, ...expenseItems, ...generalExpenseItems].map((x) => x.id).join(",")}
         initialCars={carItems}
         initialGeneralExpenses={generalExpenseItems}
         initialExpenses={expenseItems}

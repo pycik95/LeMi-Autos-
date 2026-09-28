@@ -39,11 +39,8 @@ export default function CheckAuctionsButton() {
       }
       setMessage(data.summary || "Готово");
       setState("done");
-      if (data.createdCars?.length > 0) {
-        setTimeout(() => router.push("/check"), 1500);
-      } else {
-        setTimeout(() => setState("idle"), 2000);
-      }
+      router.refresh();
+      setTimeout(() => setState("idle"), 1500);
     } catch (e) {
       setMessage(e instanceof Error ? e.message : String(e));
       setState("idle");

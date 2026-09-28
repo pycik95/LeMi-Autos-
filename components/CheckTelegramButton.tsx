@@ -21,11 +21,8 @@ export default function CheckTelegramButton() {
       }
       setMessage(data.summary || "Готово");
       setState("done");
-      if (data.itemsFound > 0) {
-        setTimeout(() => router.refresh(), 1200);
-      } else {
-        setTimeout(() => setState("idle"), 1500);
-      }
+      router.refresh();
+      setTimeout(() => setState("idle"), 1500);
     } catch (e) {
       setMessage(e instanceof Error ? e.message : String(e));
       setState("idle");
