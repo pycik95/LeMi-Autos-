@@ -46,6 +46,13 @@ type CarDetail = {
 const FUEL_TYPES = ["PETROL", "DIESEL", "CNG", "LPG", "ELECTRIC", "HYBRID", "OTHER"];
 const TRANSMISSIONS = ["MANUAL", "AUTOMATIC"];
 
+/**
+ * Карточка лота в списке закупок CarOnSale. Завершённые сделки — app-finished-checkout-card, а лоты,
+ * которые ещё ждут выдачи/самовывоза («Pickup»), — app-pickup-checkout-card. Раньше искали только первые,
+ * и свежие лоты в статусе Pickup оставались без счетов и характеристик.
+ */
+const COS_CARD_SELECTOR = "app-finished-checkout-card, app-pickup-checkout-card";
+
 type InvoiceLink = { href: string; text: string };
 type InvoiceKind = "purchase" | "brokerage" | "bnpl" | "transport";
 
@@ -74,6 +81,21 @@ function classifyInvoiceLink(text: string): InvoiceKind | null {
     return "brokerage";
   }
   return null;
+}
+
+/** Тип счёта аукциона → тип документа в карточке машины (чтобы файл был виден в «Документах в архиве»). */
+const INVOICE_DOC_KIND = {
+  brokerage: "FEE_INVOICE",
+  bnpl: "BNPL_INVOICE",
+  transport: "TRANSPORT_INVOICE",
+} as const;
+
+/** «Марка Модель» без дубля марки, если модель уже начинается с неё (напр. "Volkswagen Polo"). */
+function makeModelLabel(make: string, model: string): string {
+  const mk = make.trim();
+  const md = model.trim();
+  if (!mk || mk === "?") return md;
+  return md.toLowerCase().startsWith(mk.toLowerCase()) ? md : `${mk} ${md}`;
 }
 
 const INVOICE_FILE_SUFFIX: Record<Exclude<InvoiceKind, "purchase">, string> = {
@@ -126,8 +148,9 @@ function detailToCarData(d: CarDetail): Prisma.CarUncheckedCreateInput {
  * подтверждения на /check, как и всё остальное, найденное автопроверкой (см. app/api/check-mail/route.ts).
  * Для каждого нового лота дополнительно заходим в карточку лота (у AUTO1 — отдельная страница
  * /merchant/car/{id}, у CarOnSale — боковая панель по клику на модель в списке) и вытаскиваем
- * характеристики (цвет/коробка/комплектация/состояние и т.п.) — но данные всё равно неполные,
- * итоговые дозаполняются счётом с почты.
+ * характеристики (цвет/коробка/комплектация/состояние и т.п.) и скачиваем счета.
+ * Машины, которые уже есть в базе, но без счёта на покупку, дозаполняются тем же способом
+ * (только пустые поля + цена/дата по счёту) и снова ждут подтверждения на /check.
  */
 export async function POST(req: Request) {
   const body = await req.json().catch(() => ({}));
@@ -139,7 +162,10 @@ export async function POST(req: Request) {
   }
 
   const authDir = path.join(process.cwd(), ".auth");
-  const perSite: Record<string, { status: string; lotsFound: number; newCars: number; lotErrors?: number }> = {};
+  const perSite: Record<
+    string,
+    { status: string; lotsFound: number; newCars: number; enrichedCars?: number; lotErrors?: number }
+  > = {};
   const createdCars: { id: string; vin: string; make: string; model: string }[] = [];
 
   const run = await prisma.checkRun.create({
@@ -223,11 +249,20 @@ export async function POST(req: Request) {
         }
 
         let newCars = 0;
+        let enrichedCars = 0;
         let lotErrors = 0;
         for (const lot of lots) {
           const vin = String(lot.vin).trim().toUpperCase();
-          const existing = await prisma.car.findUnique({ where: { vin } });
-          if (existing) continue;
+          const existing = await prisma.car.findUnique({
+            where: { vin },
+            include: { documents: { select: { kind: true } } },
+          });
+          // Машина уже есть и у неё есть счёт на покупку — всё собрано, пропускаем. Если счёта нет
+          // (карточку завели раньше, когда проверка ещё не заходила в лот и не качала счета) —
+          // дозаполняем её так же, как новую, см. enrichExistingCar ниже.
+          if (existing && (existing.source !== site.source || existing.documents.some((d) => d.kind === "PURCHASE_INVOICE"))) {
+            continue;
+          }
 
           try {
           let detailData: Prisma.CarUncheckedCreateInput = {} as Prisma.CarUncheckedCreateInput;
@@ -261,7 +296,7 @@ export async function POST(req: Request) {
             // кликом по названию модели в списке (та же страница, без перехода по URL). Закрываем
             // Escape-ом перед следующим лотом, иначе панель перекроет клик по следующей карточке.
             try {
-              const cosCard = page.locator("app-finished-checkout-card", { hasText: vin });
+              const cosCard = page.locator(COS_CARD_SELECTOR, { hasText: vin });
               if ((await cosCard.count()) > 0) {
                 const cosTitle = cosCard.first().locator("enzo-headline.title");
                 await cosTitle.scrollIntoViewIfNeeded();
@@ -291,7 +326,7 @@ export async function POST(req: Request) {
             invoiceLinks = invoiceLinksByVin[vin] ?? [];
           } else {
             try {
-              const cosCard = page.locator("app-finished-checkout-card", { hasText: vin });
+              const cosCard = page.locator(COS_CARD_SELECTOR, { hasText: vin });
               if ((await cosCard.count()) > 0) {
                 invoiceLinks = await cosCard
                   .first()
@@ -333,6 +368,7 @@ export async function POST(req: Request) {
           let finalInvoiceDate = lot.date ? new Date(lot.date) : null;
           let finalMileageKm = lot.mileageKm ? Math.round(lot.mileageKm) : null;
           const purchaseDoc = pendingDocs.find((d) => d.kind === "purchase");
+          const gotLotDetail = gotDetail; // именно из карточки лота, без учёта счёта — для заметки
           if (purchaseDoc) {
             const pf = purchaseDoc.fields as {
               vehiclePrice?: number | null;
@@ -349,34 +385,78 @@ export async function POST(req: Request) {
             gotDetail = true;
           }
 
-          const notes = purchaseDoc
-            ? `Найдено автопроверкой аукциона (${site.label}) — счёт на машину скачан и приложен, данные уточнены по нему${gotDetail ? " и по карточке лота" : ""}.`
-            : `Найдено автопроверкой аукциона (${site.label}) — счёт на машину скачать НЕ удалось, цена и дата взяты со страницы списка закупок${gotDetail ? " (характеристики — из карточки лота)" : ""}. Перед подтверждением сверьте цену и дату со счётом.`;
+          let car;
+          if (existing) {
+            if (!gotDetail && pendingDocs.length === 0) continue; // нечем дополнять
 
-          const car = await prisma.car.create({
-            data: {
-              ...detailData,
-              vin,
-              make: lot.make || "?",
-              model: lot.model || "?",
-              mileageKm: finalMileageKm,
-              purchasePriceCents: finalPriceCents,
-              lotNumber: lot.lotNumber || null,
-              source: site.source,
-              invoiceDate: finalInvoiceDate,
-              status: "IN_STOCK",
-              notes,
-              checkRunId: run.id,
-            },
-          });
+            // Заполняем только пустые поля — то, что уже внесено (в т.ч. вручную), не трогаем.
+            // Исключение — цена/дата/пробег из счёта на машину: счёт первичнее страницы списка.
+            // Всё изменённое пишем в заметку, а машину возвращаем на /check на подтверждение.
+            const update: Record<string, unknown> = {};
+            for (const [field, value] of Object.entries(detailData)) {
+              if (value != null && (existing as Record<string, unknown>)[field] == null) update[field] = value;
+            }
+            const changes: string[] = [];
+            const eur = (c: number | null) => (c == null ? "—" : `${fmtSum(c / 100)} €`);
+            if (purchaseDoc) {
+              if (finalPriceCents != null && finalPriceCents !== existing.purchasePriceCents) {
+                update.purchasePriceCents = finalPriceCents;
+                changes.push(`цена ${eur(existing.purchasePriceCents)} → ${eur(finalPriceCents)} (по счёту)`);
+              }
+              if (finalInvoiceDate && existing.invoiceDate?.getTime() !== finalInvoiceDate.getTime()) {
+                update.invoiceDate = finalInvoiceDate;
+                changes.push(`дата счёта ${existing.invoiceDate?.toISOString().slice(0, 10) ?? "—"} → ${finalInvoiceDate.toISOString().slice(0, 10)}`);
+              }
+              if (finalMileageKm != null && existing.mileageKm == null) update.mileageKm = finalMileageKm;
+            } else {
+              if (existing.invoiceDate == null && finalInvoiceDate) update.invoiceDate = finalInvoiceDate;
+              if (existing.mileageKm == null && finalMileageKm != null) update.mileageKm = finalMileageKm;
+            }
+            if (existing.lotNumber == null && lot.lotNumber) update.lotNumber = lot.lotNumber;
+
+            const filled = Object.keys(update).length;
+            const note =
+              `Дополнено автопроверкой аукциона (${site.label}) ${new Date().toISOString().slice(0, 10)}: ` +
+              `${purchaseDoc ? "счёт на машину скачан и приложен" : "счёт на машину скачать НЕ удалось"}` +
+              `${gotLotDetail ? ", характеристики из карточки лота" : ", карточку лота прочитать НЕ удалось"}; заполнено полей: ${filled}` +
+              `${changes.length ? `; изменено: ${changes.join(", ")}` : ""}. Проверьте и подтвердите.`;
+            // Автоматическая заметка прошлой проверки ("дождитесь счёта на почту…") больше не актуальна.
+            const oldNotes = existing.notes?.startsWith("Найдено автопроверкой") ? "" : existing.notes ?? "";
+            update.notes = oldNotes ? `${oldNotes}\n${note}` : note;
+            update.checkRunId = run.id;
+
+            car = await prisma.car.update({ where: { id: existing.id }, data: update });
+            enrichedCars++;
+          } else {
+            const notes = purchaseDoc
+              ? `Найдено автопроверкой аукциона (${site.label}) — счёт на машину скачан и приложен, данные уточнены по нему${gotDetail ? " и по карточке лота" : ""}.`
+              : `Найдено автопроверкой аукциона (${site.label}) — счёт на машину скачать НЕ удалось, цена и дата взяты со страницы списка закупок${gotDetail ? " (характеристики — из карточки лота)" : ""}. Перед подтверждением сверьте цену и дату со счётом.`;
+
+            car = await prisma.car.create({
+              data: {
+                ...detailData,
+                vin,
+                make: lot.make || "?",
+                model: lot.model || "?",
+                mileageKm: finalMileageKm,
+                purchasePriceCents: finalPriceCents,
+                lotNumber: lot.lotNumber || null,
+                source: site.source,
+                invoiceDate: finalInvoiceDate,
+                status: "IN_PREP",
+                notes,
+                checkRunId: run.id,
+              },
+            });
+            newCars++;
+          }
           createdCars.push({ id: car.id, vin: car.vin, make: car.make, model: car.model });
-          newCars++;
 
           // Сохраняем скачанные счета в архив (та же раскладка и именование, что у почты/ТЗ:
           // "Ankauf {COS|AUTO1} {Модель} {ID}[ Тип].pdf") и заводим Document/Expense.
           if (pendingDocs.length > 0) {
             const archiveId = key === "cos" ? vin.slice(-4) : lot.lotNumber || vin.slice(-4);
-            const baseFileName = sanitize(`Ankauf ${key === "cos" ? "COS" : "AUTO1"} ${lot.model || car.model} ${archiveId}`);
+            const baseFileName = sanitize(`Ankauf ${key === "cos" ? "COS" : "AUTO1"} ${makeModelLabel(car.make, lot.model || car.model)} ${archiveId}`);
             const folder = archiveFolderFor(finalInvoiceDate || new Date(), "Rechnungen");
             const destDir = path.join(ARCHIVE_ROOT, folder.replace(/\//g, "\\"));
             try {
@@ -415,6 +495,18 @@ export async function POST(req: Request) {
 
               const expDate = f.invoiceDate ? new Date(f.invoiceDate) : finalInvoiceDate ?? new Date();
               const amountCents = Math.round(f.amount * 100);
+
+              // Файл счёта (сбор/транспорт/BNPL) привязываем к карточке машины как документ — иначе путь к нему
+              // виден только в заметке расхода, а в блоке «Документы в архиве» карточки его нет.
+              if (savedPath) {
+                await prisma.document
+                  .upsert({
+                    where: { carId_filePath: { carId: car.id, filePath: savedPath } },
+                    create: { carId: car.id, kind: INVOICE_DOC_KIND[doc.kind as keyof typeof INVOICE_DOC_KIND], filePath: savedPath, fileName, issuedAt: expDate },
+                    update: {},
+                  })
+                  .catch(() => {});
+              }
               const dup = await prisma.expense.findFirst({ where: { carId: car.id, amountCents, date: expDate } });
               if (dup) continue;
 
@@ -446,6 +538,7 @@ export async function POST(req: Request) {
           status: "ok",
           lotsFound: lots.length,
           newCars,
+          enrichedCars,
           ...(lotErrors > 0 ? { lotErrors } : {}),
         };
       } catch (err) {
@@ -467,7 +560,8 @@ export async function POST(req: Request) {
       const s = perSite[k];
       if (s.status !== "ok") return `${SITES[k].label}: ${s.status}`;
       const errSuffix = s.lotErrors ? `, ошибок по лотам: ${s.lotErrors}` : "";
-      return `${SITES[k].label}: лотов ${s.lotsFound}, новых машин ${s.newCars}${errSuffix}`;
+      const enrichedSuffix = s.enrichedCars ? `, дополнено машин ${s.enrichedCars}` : "";
+      return `${SITES[k].label}: лотов ${s.lotsFound}, новых машин ${s.newCars}${enrichedSuffix}${errSuffix}`;
     })
     .join(" | ");
 
