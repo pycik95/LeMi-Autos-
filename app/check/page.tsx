@@ -5,13 +5,16 @@ import CheckInboxClient from "@/components/CheckInboxClient";
 import CheckMailButton from "@/components/CheckMailButton";
 import CheckTelegramButton from "@/components/CheckTelegramButton";
 import CheckAuctionsButton from "@/components/CheckAuctionsButton";
+import TelegramDocsClient, { type TelegramDocRow } from "@/components/TelegramDocsClient";
+import { docSummary, roleLabel } from "@/lib/bot/cards";
+import { parseFields } from "@/lib/bot/shared";
 
 export const dynamic = "force-dynamic";
 
 const KIND_LABELS: Record<string, string> = { MAIL: "Почта", AUCTION: "Аукцион", TELEGRAM: "Telegram" };
 
 export default async function CheckPage() {
-  const [cars, generalExpenses, expenses, runs] = await Promise.all([
+  const [cars, generalExpenses, expenses, runs, tgDocs] = await Promise.all([
     prisma.car.findMany({ where: { checkRunId: { not: null } }, orderBy: { createdAt: "desc" } }),
     prisma.generalExpense.findMany({
       where: { checkRunId: { not: null } },
@@ -28,7 +31,21 @@ export default async function CheckPage() {
       orderBy: { createdAt: "desc" },
       take: 20,
     }),
+    // Документы из Telegram-бота: ждут «Подтвердить» в чате или «подвешены» (без карточки машины / не хватает данных).
+    prisma.telegramDoc.findMany({
+      select: { id: true, status: true, role: true, fieldsJson: true, reason: true, fileName: true, pageLabel: true },
+      orderBy: { createdAt: "asc" },
+    }),
   ]);
+
+  const tgRows: TelegramDocRow[] = tgDocs.map((d) => ({
+    id: d.id,
+    status: d.status === "PENDING" ? "PENDING" : "HANGING",
+    roleLabel: roleLabel(d.role),
+    summary: docSummary(parseFields(d.fieldsJson)),
+    reason: d.reason,
+    source: `${d.fileName}${d.pageLabel ? `, ${d.pageLabel}` : ""}`,
+  }));
 
   const carItems = cars.map((c) => {
     const dto = carToDTO(c);
@@ -80,6 +97,13 @@ export default async function CheckPage() {
         initialGeneralExpenses={generalExpenseItems}
         initialExpenses={expenseItems}
       />
+
+      <h2 className="text-sm font-semibold text-slate-900 mt-8 mb-3">Документы в Telegram-боте</h2>
+      <p className="text-xs text-slate-500 mb-3">
+        Подтверждаются и правятся в чате с ботом. «Подвешенные» ждут карточки машины или недостающих данных — здесь
+        их можно посмотреть и открыть файл.
+      </p>
+      <TelegramDocsClient key={`tg:${tgRows.map((d) => d.id + d.status).join(",")}`} initialDocs={tgRows} />
 
       <h2 className="text-sm font-semibold text-slate-900 mt-8 mb-3">История проверок</h2>
       {runDtos.length === 0 ? (

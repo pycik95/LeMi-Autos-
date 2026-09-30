@@ -103,30 +103,31 @@ model GoogleAuth {
 model TelegramState {
   id           String   @id @default(cuid())
   lastUpdateId Int      @default(0)
+  menuChatIds  String   @default("") // чаты (через запятую), которым уже показано постоянное меню-клавиатура
   updatedAt    DateTime @updatedAt
 }
 
-/// Один присланный боту файл, распознанный, но ещё не применённый — ждёт подтверждения
-/// пользователя в Telegram (кнопки "Подтвердить"/"Отмена"). Файл может содержать НЕСКОЛЬКО
-/// отдельных документов (например, пакетный скан чеков за месяц из HP-сканера) — каждый
-/// становится отдельным TelegramPendingItem, подтверждаются все разом одной кнопкой.
-model TelegramPending {
-  id        String   @id @default(cuid())
-  chatId    Int
-  createdAt DateTime @default(now())
+/// Документ, присланный боту в Telegram и ещё не применённый к базе. Один файл может дать несколько
+/// документов (пакетный скан чеков) — каждый отдельная запись со своим срезом страниц.
+/// status PENDING — проверен, ждёт «Подтвердить» в чате; HANGING — «подвешен»: не хватает данных
+/// или карточки машины, ждёт правки/появления карточки. После применения или удаления запись стирается.
+model TelegramDoc {
+  id            String   @id @default(cuid())
+  chatId        Int
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  status        String // "PENDING" | "HANGING"
+  code          String? // машинная причина подвешивания: NO_CAR | MISSING | UNREADABLE | HELD
+  reason        String? // причина для человека
+  role          String? // "SALE" | "PURCHASE" | "EXPENSE" | null (не распознан)
+  fieldsJson    String // распознанные поля (см. lib/bot/types.ts)
+  fileBuffer    Bytes // срез страниц исходного файла именно этого документа
+  fileMimeType  String
+  fileName      String // имя исходного файла
+  pageLabel     String? // "стр. 3" / "стр. 2-3" для пакетных сканов
+  cardMessageId Int? // id сообщения-карточки в чате (для правки по reply и обновления кнопок)
 
-  items TelegramPendingItem[]
-}
-
-model TelegramPendingItem {
-  id               String   @id @default(cuid())
-  pendingId        String
-  pending          TelegramPending @relation(fields: [pendingId], references: [id], onDelete: Cascade)
-  role             String // "SALE" | "PURCHASE" | "EXPENSE"
-  fieldsJson       String // JSON.stringify() распознанных полей этого документа
-  fileBuffer       Bytes // срез страниц исходного файла, относящихся именно к этому документу
-  fileMimeType     String
-  fileOriginalName String
+  @@index([chatId, status])
 }
 
 model CheckRun {

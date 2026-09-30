@@ -177,8 +177,8 @@ export const TELEGRAM_DOCUMENT_PROMPT = `Ты помощник по вводу �
       "counterpartyAddress": string | null,
       "mileageKm": number | null,        // пробег на момент сделки, если указан (SALE/PURCHASE)
       "conditionNote": string | null,    // краткая оговорка о состоянии/повреждениях/гарантии, 1 фраза (только SALE)
-      "make": string | null,             // марка — нужна только при PURCHASE, для новой карточки машины
-      "model": string | null,            // модель — нужна только при PURCHASE
+      "make": string | null,             // марка автомобиля — при PURCHASE и SALE (для SALE помогает найти машину, если VIN прочитан с ошибкой)
+      "model": string | null,            // модель автомобиля — при PURCHASE и SALE
       "firstRegistration": string | null,// Erstzulassung, формат YYYY-MM-DD — только при PURCHASE, если указана
       "owners": number | null,           // число владельцев (включая нового) — только при PURCHASE, если можно определить
 
@@ -576,4 +576,26 @@ export async function extractTelegramBatchFields(
 export async function extractAuctionLots(pageText: string, siteLabel: string): Promise<ExtractResult> {
   const prompt = AUCTION_LOTS_PROMPT.replace("{SITE}", siteLabel) + `\n\n--- текст страницы ---\n${pageText.slice(0, 40000)}`;
   return callModel(prompt, 4096);
+}
+
+/**
+ * Правка распознанных полей по текстовой просьбе пользователя в Telegram ("в договоре не 8000, а 800").
+ * Меняются только явно названные поля; всё остальное модель обязана вернуть как есть.
+ */
+export async function applyTelegramCorrection(fieldsJson: string, instruction: string): Promise<ExtractResult> {
+  const prompt = `Ты помощник по вводу данных б/у автомобилей. Ниже — JSON с уже распознанными полями одного документа и сообщение пользователя с правкой.
+Верни СТРОГО валидный JSON без markdown и пояснений: тот же объект целиком, в котором изменены ТОЛЬКО поля, которые пользователь явно попросил исправить. Остальные поля скопируй без изменений. Названия и типы полей не меняй (числа — числами, даты — YYYY-MM-DD, суммы в евро без символа валюты).
+Если сообщение не является правкой этих данных или непонятно, что менять, верни {"error": "кратко почему"}.
+Не додумывай значений, которых пользователь не называл. VIN в тексте сообщения нужен только чтобы найти документ — менять поле vin можно лишь если пользователь прямо просит исправить сам VIN.
+
+Текущие данные:
+${fieldsJson}
+
+Сообщение пользователя:
+${instruction}`;
+  const res = await callModel(prompt, 2048);
+  if (!res.ok) return res;
+  const f = res.fields as { error?: string };
+  if (f && typeof f === "object" && f.error) return { ok: false, status: 400, error: f.error };
+  return res;
 }

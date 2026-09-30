@@ -19,7 +19,11 @@ export default function CheckTelegramButton() {
         setState("idle");
         return;
       }
-      setMessage(data.summary || "Готово");
+      setMessage(
+        data.summary?.startsWith("Сообщений: 0,")
+          ? "Новых сообщений боту нет — сначала пришлите документ в Telegram"
+          : data.summary || "Готово"
+      );
       setState("done");
       router.refresh();
       setTimeout(() => setState("idle"), 1500);
