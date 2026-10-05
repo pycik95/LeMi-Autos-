@@ -67,6 +67,9 @@ async function slicePdfPages(buffer: Buffer, pages: number[]): Promise<Buffer> {
   const src = await PDFDocument.load(buffer);
   const out = await PDFDocument.create();
   const indices = pages.map((p) => p - 1).filter((i) => i >= 0 && i < src.getPageCount());
+  // Документ занимает весь файл (напр. банковская выписка на 9–11 страниц) — сохраняем оригинал как есть,
+  // побайтово, а не пересобранную копию: для бухгалтера и аудита нужен именно исходный файл.
+  if (new Set(indices).size === src.getPageCount()) return buffer;
   const copied = await out.copyPages(src, indices.length > 0 ? indices : [0]);
   for (const page of copied) out.addPage(page);
   return Buffer.from(await out.save());
@@ -384,7 +387,9 @@ export async function handleCallback(token: string, cb: TelegramCallbackQuery) {
       return;
     }
     case "r": {
-      if (doc.code === "UNREADABLE") {
+      // Файл целиком не распознан или тип не определён — прогоняем распознавание заново (напр. после того,
+      // как бот научили новому типу документов, например банковским выпискам).
+      if (doc.code === "UNREADABLE" || doc.code === "UNKNOWN_TYPE") {
         await answerCallbackQuery(token, cb.id, "Распознаю заново…");
         await prisma.telegramDoc.delete({ where: { id: doc.id } });
         if (doc.cardMessageId) await clearButtons(token, doc.chatId, doc.cardMessageId);

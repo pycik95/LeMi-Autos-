@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import type { GeneralExpenseCategory } from "@/lib/types";
 
-export type DocRole = "SALE" | "PURCHASE" | "EXPENSE";
+export type DocRole = "SALE" | "PURCHASE" | "EXPENSE" | "STATEMENT";
 
 /** Поля документа, как их возвращает модель (см. TELEGRAM_DOCUMENT_PROMPT в lib/extractZulassung.ts). */
 export type DocFields = {
@@ -25,6 +25,14 @@ export type DocFields = {
   amount?: number | null;
   vatAmount?: number | null;
   paymentMethod?: string | null;
+  // Банковская выписка (role = "STATEMENT")
+  statementNumber?: number | null;
+  bank?: string | null;
+  iban?: string | null;
+  periodStart?: string | null;
+  periodEnd?: string | null;
+  openingBalance?: number | null;
+  closingBalance?: number | null;
   /** Как VIN был прочитан из договора, если пользователь подтвердил, что это другая машина. */
   vinReadAs?: string | null;
   /** Пользователь подтвердил, что это НОВАЯ машина, хотя VIN похож на уже существующую. */

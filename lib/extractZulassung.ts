@@ -158,6 +158,8 @@ export const TELEGRAM_DOCUMENT_PROMPT = `Ты помощник по вводу �
 — "PURCHASE" — договор, где Chukhliebov ПОКУПАТЕЛЬ (Käufer): салон покупает машину у частного лица (не с аукциона).
 — "EXPENSE" — обычный счёт/чек на расход бизнеса, НЕ про покупку/продажу самого автомобиля целиком
   (ремонт, ТЮФ, доставка, топливо, запчасти, страховка, реклама, аренда, бухгалтерия и т.п.).
+— "STATEMENT" — банковская выписка по счёту (Kontoauszug, Kreissparkasse и т.п.): ВСЕ страницы одной выписки — это ОДИН документ
+  (pages — все страницы файла, даже если их 9–11). Это не счёт и не договор — расходом её не считай.
 — null — тип этой конкретной страницы/документа не удаётся определить (нечитаемо, не по теме, чистый лист).
 
 Верни СТРОГО валидный JSON без markdown-разметки, без пояснений, только объект вида:
@@ -167,7 +169,7 @@ export const TELEGRAM_DOCUMENT_PROMPT = `Ты помощник по вводу �
     {
       "pages": number[],                // номера страниц ЭТОГО документа, 1 — первая страница файла.
                                         //   Для одностраничного документа — массив из одного числа.
-      "role": "SALE" | "PURCHASE" | "EXPENSE" | null,
+      "role": "SALE" | "PURCHASE" | "EXPENSE" | "STATEMENT" | null,
       "vin": string | null,              // VIN / Fahrgestellnummer / Fahrzeug-Ident-Nr., 17 символов, если есть.
                                          //   В VIN НИКОГДА не бывает букв I, O, Q — если видишь их, это цифры 1, 0, 0.
                                          //   Для EXPENSE — только если счёт явно привязан к конкретной машине.
@@ -181,6 +183,14 @@ export const TELEGRAM_DOCUMENT_PROMPT = `Ты помощник по вводу �
       "model": string | null,            // модель автомобиля — при PURCHASE и SALE
       "firstRegistration": string | null,// Erstzulassung, формат YYYY-MM-DD — только при PURCHASE, если указана
       "owners": number | null,           // число владельцев (включая нового) — только при PURCHASE, если можно определить
+
+      "statementNumber": number | null,  // только при STATEMENT — номер выписки в году ("Kontoauszug 7/2026" → 7)
+      "bank": string | null,             // только при STATEMENT — название банка
+      "iban": string | null,             // только при STATEMENT — IBAN счёта без пробелов
+      "periodStart": string | null,      // только при STATEMENT — первый день периода (день после предыдущего Kontostand), YYYY-MM-DD
+      "periodEnd": string | null,        // только при STATEMENT — дата конечного Kontostand выписки (последний день периода), YYYY-MM-DD
+      "openingBalance": number | null,   // только при STATEMENT — начальное сальдо (Kontostand на начало периода), €, со знаком
+      "closingBalance": number | null,   // только при STATEMENT — конечное сальдо, €, со знаком
 
       "isRealInvoice": boolean | null,   // только при EXPENSE — false, если это НЕ настоящий счёт
                                          //   (Rechnung), а платёжное уведомление посредника (напр.

@@ -130,6 +130,24 @@ model TelegramDoc {
   @@index([chatId, status])
 }
 
+/// Банковская выписка (Kontoauszug), сохранённая в архиве через бота. Основа для квартальной сверки:
+/// проводки выписки сравниваются с расходами и счетами (недостающие счета ищем и добавляем).
+model BankStatement {
+  id                  String   @id @default(cuid())
+  bank                String?
+  iban                String
+  number              Int? // номер выписки в году ("Auszug Nr. 7")
+  periodStart         DateTime?
+  periodEnd           DateTime
+  openingBalanceCents Int?
+  closingBalanceCents Int?
+  filePath            String // путь относительно корня архива
+  fileName            String
+  createdAt           DateTime @default(now())
+
+  @@unique([iban, periodEnd])
+}
+
 model CheckRun {
   id         String       @id @default(cuid())
   kind       CheckRunKind

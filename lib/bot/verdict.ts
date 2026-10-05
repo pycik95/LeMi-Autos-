@@ -17,6 +17,16 @@ export type Verdict =
 export async function judge(it: DocFields): Promise<Verdict> {
   const vin = normVin(it.vin);
 
+  if (it.role === "STATEMENT") {
+    const end = it.periodEnd ? new Date(it.periodEnd) : null;
+    const iban = it.iban?.replace(/s/g, "").toUpperCase();
+    if (!end || Number.isNaN(end.getTime())) return { kind: "hang", code: "MISSING", reason: "не распознан период выписки (дата конечного сальдо)" };
+    if (!iban) return { kind: "hang", code: "MISSING", reason: "не распознан IBAN счёта" };
+    const existing = await prisma.bankStatement.findUnique({ where: { iban_periodEnd: { iban, periodEnd: end } } });
+    if (existing) return { kind: "skip", reason: `выписка за период по ${it.periodEnd} (IBAN …${iban.slice(-4)}) уже сохранена: ${existing.fileName}` };
+    return { kind: "ok" };
+  }
+
   if (!it.role) {
     return { kind: "hang", code: "UNKNOWN_TYPE", reason: "не удалось определить тип документа (продажа / покупка / расход)" };
   }

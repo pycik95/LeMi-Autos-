@@ -32,7 +32,7 @@ export const GERMAN_MONTHS = [
   "Dezember",
 ];
 
-export type ArchiveFolder = "Rechnungen" | "Fahrzeugdokumente" | "Kauferträge";
+export type ArchiveFolder = "Rechnungen" | "Fahrzeugdokumente" | "Kauferträge" | "Kontoauszüge";
 
 /**
  * Папка архива по дате счёта: {Год}/Q{квартал}/{Месяц по-немецки}/{раздел}

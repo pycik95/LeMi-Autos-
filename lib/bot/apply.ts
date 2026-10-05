@@ -14,7 +14,7 @@ import {
 } from "./shared";
 
 /** Кладёт файл в архив. Не удалось сохранить файл — данные всё равно заносим, путь будет null. */
-function saveToArchive(docDate: Date, folderName: "Rechnungen" | "Kauferträge", fileName: string, buffer: Buffer) {
+function saveToArchive(docDate: Date, folderName: "Rechnungen" | "Kauferträge" | "Kontoauszüge", fileName: string, buffer: Buffer) {
   const folder = archiveFolderFor(docDate, folderName);
   const destDir = path.join(ARCHIVE_ROOT, folder.replace(/\//g, "\\"));
   try {
@@ -175,10 +175,42 @@ async function applyExpense(f: DocFields, vin: string | null, buffer: Buffer, ex
   return `Общий расход «${vendor} — ${item}» (${fmtSum(f.amount)} €) добавлен.`;
 }
 
+/**
+ * Банковская выписка: кладём файл в архив в {Год}/Q{n}/{Месяц}/Kontoauszüge/ (месяц — по концу периода)
+ * и записываем её в BankStatement — основа для квартальной сверки расходов со счетами.
+ */
+async function applyStatement(f: DocFields, buffer: Buffer, ext: string): Promise<string> {
+  const end = new Date(f.periodEnd!);
+  const iban = f.iban!.replace(/s/g, "").toUpperCase();
+  const existing = await prisma.bankStatement.findUnique({ where: { iban_periodEnd: { iban, periodEnd: end } } });
+  if (existing) return `Выписка уже сохранена ранее: ${existing.fileName} — повторно не сохраняю.`;
+
+  const ym = `${end.getFullYear()}-${String(end.getMonth() + 1).padStart(2, "0")}`;
+  const fileName = sanitize(`Kontoauszug ${ym}${f.statementNumber ? ` Nr ${f.statementNumber}` : ""} ${iban.slice(-4)}${ext}`);
+  const filePath = saveToArchive(end, "Kontoauszüge", fileName, buffer);
+  if (!filePath) throw new Error("не удалось сохранить файл выписки в архив — проверьте доступ к папке архива");
+
+  await prisma.bankStatement.create({
+    data: {
+      bank: f.bank || null,
+      iban,
+      number: f.statementNumber ? Math.round(f.statementNumber) : null,
+      periodStart: f.periodStart ? new Date(f.periodStart) : null,
+      periodEnd: end,
+      openingBalanceCents: f.openingBalance != null ? Math.round(f.openingBalance * 100) : null,
+      closingBalanceCents: f.closingBalance != null ? Math.round(f.closingBalance * 100) : null,
+      filePath,
+      fileName,
+    },
+  });
+  return `Выписка сохранена: ${filePath}`;
+}
+
 /** Применяет подтверждённый документ к базе и возвращает текст результата для чата. */
 export async function applyDoc(f: DocFields, fileName: string, mimeType: string, buffer: Buffer): Promise<string> {
   const ext = path.extname(fileName) || (mimeType === "application/pdf" ? ".pdf" : ".jpg");
   const vin = normVin(f.vin);
+  if (f.role === "STATEMENT") return applyStatement(f, buffer, ext);
   if (f.role === "SALE") return applySale(f, vin!, buffer, ext);
   if (f.role === "PURCHASE") return applyPurchase(f, vin!, buffer, ext);
   return applyExpense(f, vin, buffer, ext);

@@ -5,7 +5,7 @@ import { fmtSum, normVin, parseFields, sanitize, type DocFields } from "./shared
 import { findSimilarCars, type Candidate } from "./match";
 import type { TelegramDoc } from "@prisma/client";
 
-const ROLE_LABEL: Record<string, string> = { SALE: "ПРОДАЖА", PURCHASE: "ПОКУПКА", EXPENSE: "РАСХОД" };
+const ROLE_LABEL: Record<string, string> = { SALE: "ПРОДАЖА", PURCHASE: "ПОКУПКА", EXPENSE: "РАСХОД", STATEMENT: "ВЫПИСКА" };
 const CAPTION_LIMIT = 1000; // лимит Telegram на подпись — 1024
 
 export function roleLabel(role: string | null | undefined): string {
@@ -15,6 +15,14 @@ export function roleLabel(role: string | null | undefined): string {
 /** Строка-суть документа для карточек и списков. */
 export function docSummary(f: DocFields): string {
   const parts: string[] = [];
+  if (f.role === "STATEMENT") {
+    if (f.bank) parts.push(f.bank);
+    if (f.statementNumber) parts.push(`Nr ${f.statementNumber}`);
+    if (f.periodStart || f.periodEnd) parts.push(`${f.periodStart ?? "?"} – ${f.periodEnd ?? "?"}`);
+    if (f.iban) parts.push(`IBAN …${f.iban.replace(/s/g, "").slice(-4)}`);
+    if (f.openingBalance != null && f.closingBalance != null) parts.push(`сальдо ${fmtSum(f.openingBalance)} → ${fmtSum(f.closingBalance)} €`);
+    return parts.join(" · ") || "данные не распознаны";
+  }
   if (f.role === "EXPENSE") {
     if (f.vendor) parts.push(f.vendor);
     if (f.item) parts.push(f.item);
@@ -41,6 +49,8 @@ export function displayFileName(doc: Pick<TelegramDoc, "fileName" | "fieldsJson"
   const amount = f.role === "EXPENSE" ? f.amount : f.price;
   const bits = [
     roleLabel(doc.role),
+    f.role === "STATEMENT" ? f.periodEnd?.slice(0, 7) : null,
+    f.role === "STATEMENT" && f.statementNumber ? `Nr${f.statementNumber}` : null,
     normVin(f.vin),
     amount != null ? `${fmtSum(amount)}€` : null,
     doc.pageLabel?.replace(/\s/g, ""),
