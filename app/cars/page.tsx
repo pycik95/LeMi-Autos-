@@ -17,7 +17,9 @@ const STATUS_OPTIONS: { value: string; label: string }[] = [
   { value: "SOLD", label: "Продан" },
 ];
 
-type SortKey = "make" | "purchase" | "sale" | "income" | "invoiceDate";
+type SortKey = "make" | "purchase" | "sale" | "income" | "invoiceDate" | "soldAt";
+
+const MONTH_LABELS = ["Янв", "Фев", "Мар", "Апр", "Май", "Июн", "Июл", "Авг", "Сен", "Окт", "Ноя", "Дек"];
 
 function SortHeader({
   label,
@@ -52,6 +54,7 @@ export default async function CarsListPage({
     sort?: string;
     dir?: string;
     range?: string;
+    by?: string;
     year?: string;
     quarter?: string;
     month?: string;
@@ -72,7 +75,11 @@ export default async function CarsListPage({
   else if (range === "quarter") period = quarterRange(year, quarter);
   else if (range === "month") period = monthRange(year, month);
 
-  const sort: SortKey = (sp.sort as SortKey) ?? "invoiceDate";
+  // По какой дате отбирается период: по дате счёта (как раньше) или по дате продажи.
+  const by: "invoice" | "sold" = sp.by === "sold" ? "sold" : "invoice";
+  const dateField = by === "sold" ? "soldAt" : "invoiceDate";
+
+  const sort: SortKey = (sp.sort as SortKey) ?? (by === "sold" ? "soldAt" : "invoiceDate");
   const dir = sp.dir === "asc" ? "asc" : sp.dir === "desc" ? "desc" : sort === "make" ? "asc" : "desc";
 
   // Текстовый поиск (по VIN/марке/модели) ищет конкретную машину — не должен
@@ -84,7 +91,7 @@ export default async function CarsListPage({
     where: {
       checkRunId: null, // ещё не подтверждённые на /check карточки сюда не попадают
       status: activeStatus || undefined,
-      invoiceDate: period && !searchActive ? { gte: period.start, lt: period.end } : undefined,
+      [dateField]: period && !searchActive ? { gte: period.start, lt: period.end } : undefined,
       ...(sp.q
         ? {
             OR: [
@@ -120,6 +127,8 @@ export default async function CarsListPage({
         return r.fin.preTaxIncome ?? -Infinity;
       case "invoiceDate":
         return r.car.invoiceDate ? r.car.invoiceDate.getTime() : -Infinity;
+      case "soldAt":
+        return r.car.soldAt ? r.car.soldAt.getTime() : -Infinity;
     }
   };
   rows.sort((a, b) => {
@@ -134,6 +143,7 @@ export default async function CarsListPage({
   const otherParams = new URLSearchParams();
   if (activeStatus) otherParams.set("status", activeStatus);
   if (sp.q) otherParams.set("q", sp.q);
+  if (by === "sold") otherParams.set("by", "sold");
   if (sp.sort) otherParams.set("sort", sp.sort);
   if (sp.dir) otherParams.set("dir", sp.dir);
   const otherUrl = `/cars?${otherParams.toString()}`;
@@ -155,6 +165,46 @@ export default async function CarsListPage({
 
   const years = Array.from({ length: 5 }, (_, i) => fallback.year - i);
 
+  // Сводка «сколько продано по месяцам» — всегда по дате ПРОДАЖИ и по выбранному году
+  // (не зависит от фильтра периода/статуса таблицы ниже, чтобы видеть картину года целиком).
+  const yr = yearRange(year);
+  const soldInYear = await prisma.car.findMany({
+    where: { checkRunId: null, status: "SOLD", soldAt: { gte: yr.start, lt: yr.end } },
+    include: { expenses: true },
+  });
+  const monthly = MONTH_LABELS.map(() => ({ count: 0, revenue: 0, income: 0 }));
+  for (const c of soldInYear) {
+    const dto = carToDTO(c);
+    const fin = calculateFinance(dto, dto.expenses ?? []);
+    const m = monthly[c.soldAt!.getMonth()];
+    m.count += 1;
+    m.revenue += fin.salePrice ?? 0;
+    m.income += fin.preTaxIncome ?? 0;
+  }
+  const yearTotal = monthly.reduce(
+    (a, m) => ({ count: a.count + m.count, revenue: a.revenue + m.revenue, income: a.income + m.income }),
+    { count: 0, revenue: 0, income: 0 }
+  );
+  function monthHref(m: number): string {
+    const params = new URLSearchParams(currentParams);
+    params.set("range", "month");
+    params.set("year", String(year));
+    params.set("month", String(m));
+    params.set("by", "sold");
+    params.delete("status");
+    params.delete("sort");
+    params.delete("dir");
+    return `/cars?${params.toString()}`;
+  }
+  function byHref(next: "invoice" | "sold"): string {
+    const params = new URLSearchParams(currentParams);
+    if (next === "sold") params.set("by", "sold");
+    else params.delete("by");
+    params.delete("sort");
+    params.delete("dir");
+    return `/cars?${params.toString()}`;
+  }
+
   return (
     <div className="max-w-7xl mx-auto px-6 py-8">
       <div className="flex items-center justify-between mb-6">
@@ -172,6 +222,45 @@ export default async function CarsListPage({
 
       <SaleDocumentDropzone />
 
+      <div className="bg-white border border-slate-200 rounded-xl p-4 mb-4">
+        <div className="flex flex-wrap items-baseline justify-between gap-2 mb-3">
+          <h2 className="text-sm font-semibold text-slate-900">Продано по месяцам, {year}</h2>
+          <div className="text-xs text-slate-500">
+            всего {yearTotal.count} шт. · выручка {formatEUR(yearTotal.revenue)} · доход до налога {formatEUR(yearTotal.income)}
+          </div>
+        </div>
+        <div className="grid grid-cols-3 sm:grid-cols-6 lg:grid-cols-12 gap-2">
+          {monthly.map((m, i) => {
+            const selected = range === "month" && by === "sold" && month === i + 1;
+            return (
+              <Link
+                key={i}
+                href={monthHref(i + 1)}
+                title={`${MONTH_LABELS[i]}: продано ${m.count}, выручка ${formatEUR(m.revenue)}, доход до налога ${formatEUR(m.income)}`}
+                className={`rounded-lg border px-2 py-2 text-center transition-colors ${
+                  selected ? "border-slate-900 bg-slate-900 text-white" : "border-slate-200 hover:bg-slate-50 text-slate-700"
+                }`}
+              >
+                <div className={`text-xs ${selected ? "text-slate-300" : "text-slate-500"}`}>{MONTH_LABELS[i]}</div>
+                <div className="text-lg font-semibold tabular-nums leading-tight">{m.count}</div>
+                <div className={`text-[11px] tabular-nums ${selected ? "text-slate-300" : "text-slate-400"}`}>
+                  {m.count ? formatEUR(m.revenue) : "—"}
+                </div>
+              </Link>
+            );
+          })}
+        </div>
+      </div>
+
+      {by === "sold" && (
+        <div className="mb-3 text-sm text-slate-500">
+          Показаны машины, проданные в выбранном периоде.{" "}
+          <Link href={byHref("invoice")} className="text-slate-700 underline hover:text-slate-900">
+            Вернуться к списку по дате покупки
+          </Link>
+        </div>
+      )}
+
       <div className="flex flex-wrap items-end justify-between gap-4 mb-4">
         <PeriodFilter
           baseUrl={otherUrl}
@@ -188,6 +277,7 @@ export default async function CarsListPage({
           <input type="hidden" name="quarter" value={quarter} />
           <input type="hidden" name="month" value={month} />
           {activeStatus && <input type="hidden" name="status" value={activeStatus} />}
+          {by === "sold" && <input type="hidden" name="by" value="sold" />}
           {sp.sort && <input type="hidden" name="sort" value={sp.sort} />}
           {sp.dir && <input type="hidden" name="dir" value={sp.dir} />}
           <input
@@ -237,7 +327,10 @@ export default async function CarsListPage({
                   <SortHeader label="Доход до налога, €" href={sortHref("income")} active={sort === "income"} dir={dir} />
                 </th>
                 <th className="px-5 py-3 font-medium">
-                  <SortHeader label="Дата счёта" href={sortHref("invoiceDate")} active={sort === "invoiceDate"} dir={dir} />
+                  <SortHeader label="Дата покупки" href={sortHref("invoiceDate")} active={sort === "invoiceDate"} dir={dir} />
+                </th>
+                <th className="px-5 py-3 font-medium">
+                  <SortHeader label="Дата продажи" href={sortHref("soldAt")} active={sort === "soldAt"} dir={dir} />
                 </th>
               </tr>
             </thead>
@@ -288,6 +381,7 @@ export default async function CarsListPage({
                     {formatEUR(fin.preTaxIncome)}
                   </td>
                   <td className="px-5 py-3 text-slate-500">{formatDate(car.invoiceDate)}</td>
+                  <td className="px-5 py-3 text-slate-500">{formatDate(car.soldAt)}</td>
                 </tr>
               ))}
             </tbody>
